@@ -1,0 +1,85 @@
+server:
+  listen: "127.0.0.1:8080"
+  read_header_timeout_seconds: 15
+  shutdown_timeout_seconds: 30
+
+storage:
+  path: "/var/lib/cli-gateway"
+  max_file_bytes: 52428800        # 50 MiB
+  quota_bytes: 2147483648         # 2 GiB
+  file_ttl_seconds: 86400         # 24 hours
+  run_ttl_seconds: 604800         # 7 days
+  session_ttl_seconds: 2592000    # 30 days
+  cleanup_interval_seconds: 300
+  cleanup_run_input: true
+
+limits:
+  max_global_processes: 16
+  max_executor_processes: 4
+  max_user_processes: 4
+  max_queue_size: 32
+  queue_wait_timeout_seconds: 30
+  session_lock_timeout_seconds: 120
+  max_output_bytes: 16777216      # 16 MiB
+  max_files_per_task: 10
+  default_timeout_seconds: 600
+  max_timeout_seconds: 1800
+
+logging:
+  level: "info"
+  diagnostic: false
+
+admin:
+  enabled: true
+  # Replace with your own token or token_sha256 before exposing beyond localhost!
+  token: "gw-admin-change-me"
+  allow_without_auth: false
+
+auth:
+  keys:
+    - id: "key_dev_default"
+      owner_id: "user_default"
+      name: "Default local client"
+      # Replace with your own token or key_sha256 in production!
+      key: "gw-dev-change-me"
+      allowed_models: ["*"]
+      max_concurrent: 4
+      revoked: false
+
+models:
+  - id: codex
+    provider: codex
+    executable: /usr/local/bin/codex
+    timeout_seconds: 600
+    sandbox_mode: read-only
+    fs_access: workspace-read
+    allow_commands: false
+
+  - id: antigravity
+    provider: antigravity
+    executable: /usr/local/bin/agy
+    timeout_seconds: 600
+    sandbox_mode: strict
+    fs_access: workspace-read
+    allow_commands: false
+
+  - id: gemini
+    provider: gemini
+    executable: /usr/local/bin/gemini
+    timeout_seconds: 600
+    fs_access: workspace-read
+    allow_commands: false
+
+  - id: claude
+    provider: claude
+    executable: /usr/local/bin/claude
+    timeout_seconds: 600
+    allowed_tools: ["Read"]
+    fs_access: workspace-read
+    allow_commands: false
+
+  - id: local-qwen
+    provider: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen3
+    timeout_seconds: 600
