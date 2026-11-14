@@ -203,7 +203,7 @@ func mergeExtraWorkersConfig(cfg *Config) error {
 
 func applyDefaults(cfg *Config) {
 	if cfg.Server.Listen == "" {
-		cfg.Server.Listen = "127.0.0.1:8080"
+		cfg.Server.Listen = "127.0.0.1:7070"
 	}
 	if cfg.Server.ReadHeaderTimeoutSeconds <= 0 {
 		cfg.Server.ReadHeaderTimeoutSeconds = 15

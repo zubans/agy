@@ -53,7 +53,7 @@ resolve_base_url() {
       exit
     }' "$CONFIG_PATH" 2>/dev/null || true)"
   fi
-  listen="${listen:-127.0.0.1:8080}"
+  listen="${listen:-127.0.0.1:7070}"
   if [[ "$listen" == :* ]]; then
     listen="127.0.0.1${listen}"
   fi

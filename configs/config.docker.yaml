@@ -1,5 +1,5 @@
 server:
-  listen: "0.0.0.0:8080"
+  listen: "0.0.0.0:7070"
   read_header_timeout_seconds: 15
   shutdown_timeout_seconds: 30
 
