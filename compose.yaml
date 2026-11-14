@@ -1,0 +1,41 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cli-ai-gateway:local
+    restart: unless-stopped
+    user: "10001:10001"
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      GATEWAY_CONFIG: /etc/cli-ai-gateway/config.yaml
+      GATEWAY_LISTEN: "0.0.0.0:8080"
+      GATEWAY_STORAGE_PATH: /var/lib/cli-gateway
+    volumes:
+      - ./configs/config.example.yaml:/etc/cli-ai-gateway/config.yaml:ro
+      - gateway_data:/var/lib/cli-gateway
+      - codex_home:/var/lib/cli-gateway/homes/codex
+      - agy_home:/var/lib/cli-gateway/homes/antigravity
+      - gemini_home:/var/lib/cli-gateway/homes/gemini
+      - claude_home:/var/lib/cli-gateway/homes/claude
+      # Mount host CLI binaries or extend Dockerfile to bake official CLIs into /usr/local/bin.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    cpus: "2.0"
+    mem_limit: 2g
+    pids_limit: 256
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  gateway_data:
+  codex_home:
+  agy_home:
+  gemini_home:
+  claude_home:

@@ -1,0 +1,1356 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI AI Gateway — Админ-панель</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a2f;
+      --panel-2: #17223d;
+      --border: #273558;
+      --text: #e6ecf8;
+      --muted: #93a3c7;
+      --accent: #4f8cff;
+      --accent-hover: #6aa0ff;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+      --code-bg: #080c18;
+      --radius: 10px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    a { color: var(--accent); }
+    button, input, select, textarea {
+      font: inherit;
+      color: inherit;
+    }
+    .hidden { display: none !important; }
+
+    /* Top bar */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(11, 16, 32, 0.92);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+    }
+    .pill.ok { border-color: rgba(34,197,94,.45); color: #86efac; background: rgba(34,197,94,.12); }
+    .pill.degraded { border-color: rgba(245,158,11,.45); color: #fcd34d; background: rgba(245,158,11,.12); }
+    .pill.bad { border-color: rgba(239,68,68,.45); color: #fca5a5; background: rgba(239,68,68,.12); }
+    .pill.muted { color: var(--muted); }
+
+    .top-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    main {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 18px 20px 48px;
+    }
+
+    /* Stats cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .stat-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+    .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .stat-val { font-size: 20px; font-weight: 700; font-family: var(--mono); }
+    .stat-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+    }
+    .tab-btn {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 600;
+      transition: .12s;
+    }
+    .tab-btn:hover { color: var(--text); border-color: #3a4f82; }
+    .tab-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    /* Panels & Controls */
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .card-head h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .btn {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn.primary:hover { background: var(--accent-hover); }
+    .btn.danger { background: rgba(239,68,68,.15); border-color: rgba(239,68,68,.45); color: #fca5a5; }
+    .btn.danger:hover { background: rgba(239,68,68,.28); }
+    .btn.ok { background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.4); color: #86efac; }
+    .btn.sm { padding: 4px 8px; font-size: 12px; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    input[type="text"], input[type="password"], input[type="number"], select, textarea {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 7px 10px;
+      outline: none;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    textarea { width: 100%; font-family: var(--mono); font-size: 13px; resize: vertical; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      text-align: left;
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .mono { font-family: var(--mono); font-size: 12px; }
+    .truncate { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Auth overlay */
+    #login-screen {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .login-box {
+      width: 100%;
+      max-width: 400px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+    .login-box h1 { margin: 0 0 6px; font-size: 20px; }
+    .login-box p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .field input, .field select { width: 100%; }
+
+    /* Modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(0,0,0,.68);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal {
+      width: 100%;
+      max-width: 720px;
+      max-height: 88vh;
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+    }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 60;
+      background: var(--panel-2);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    }
+    .toast.err { border-color: var(--bad); color: #fecaca; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 12px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="login-screen" class="hidden">
+  <form class="login-box" id="login-form">
+    <h1>CLI AI Gateway</h1>
+    <p>Вход в панель управления исполнителями, ключами, сессиями и процессами.</p>
+    <div class="field">
+      <label for="login-token">Admin Token</label>
+      <input type="password" id="login-token" placeholder="gw-admin-..." autocomplete="current-password" required>
+    </div>
+    <div id="login-error" class="mono" style="color:#fca5a5;margin-bottom:10px;"></div>
+    <button type="submit" class="btn primary" style="width:100%;">Войти</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="brand">
+      <span>CLI AI Gateway · Админка</span>
+      <span id="hdr-status" class="pill muted">...</span>
+      <span id="hdr-uptime" class="pill muted">uptime: -</span>
+    </div>
+    <div class="top-actions">
+      <label class="pill" style="cursor:pointer;">
+        <input type="checkbox" id="auto-refresh" checked> Авто-обновление (4с)
+      </label>
+      <button class="btn" id="btn-refresh">Обновить</button>
+      <button class="btn" id="btn-cleanup">Очистить TTL</button>
+      <button class="btn danger hidden" id="btn-logout">Выйти</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="stats-grid" id="stats-grid">
+      <div class="stat-card"><div class="stat-label">Процессы (активные / лимит)</div><div class="stat-val" id="st-proc">-</div><div class="stat-sub" id="st-queue">Очередь: -</div></div>
+      <div class="stat-card"><div class="stat-label">Модели (готовы / всего)</div><div class="stat-val" id="st-models">-</div><div class="stat-sub" id="st-db">SQLite: -</div></div>
+      <div class="stat-card"><div class="stat-label">Запуски (активных / всего)</div><div class="stat-val" id="st-runs">-</div><div class="stat-sub" id="st-sess">Сессий: -</div></div>
+      <div class="stat-card"><div class="stat-label">Хранилище файлов</div><div class="stat-val" id="st-storage">-</div><div class="stat-sub" id="st-files">Файлов: -</div></div>
+      <div class="stat-card"><div class="stat-label">Активные API-ключи</div><div class="stat-val" id="st-keys">-</div><div class="stat-sub" id="st-listen">Bind: -</div></div>
+    </section>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="models">Модели и CLI</button>
+      <button class="tab-btn" data-tab="runs">Запуски и процессы</button>
+      <button class="tab-btn" data-tab="sessions">Сессии</button>
+      <button class="tab-btn" data-tab="files">Файлы</button>
+      <button class="tab-btn" data-tab="keys">API-ключи</button>
+      <button class="tab-btn" data-tab="playground">Песочница</button>
+      <button class="tab-btn" data-tab="config">Конфиг и команды</button>
+    </nav>
+
+    <!-- TAB: MODELS -->
+    <section id="tab-models" class="tab-pane">
+      <div class="card">
+        <div class="card-head">
+          <h2>Исполнители и модели</h2>
+          <div class="row">
+            <button class="btn" id="btn-check-all-models">Проверить все CLI / Ollama</button>
+            <button class="btn primary" id="btn-open-add-model">+ Добавить Ollama-модель</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Провайдер / Цель</th>
+                <th>Статус</th>
+                <th>Включена</th>
+                <th>Лимиты</th>
+                <th>Capabilities</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="models-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: RUNS -->
+    <section id="tab-runs" class="tab-pane hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>История и активные запуски</h2>
+          <div class="row">
+            <select id="runs-filter">
+              <option value="all">Все статусы</option>
+              <option value="running">running</option>
+              <option value="queued">queued</option>
+              <option value="completed">completed</option>
+              <option value="failed">failed</option>
+              <option value="timed_out">timed_out</option>
+              <option value="cancelled">cancelled</option>
+              <option value="interrupted">interrupted</option>
+            </select>
+            <button class="btn" id="btn-reload-runs">Обновить</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Run ID</th>
+                <th>Модель</th>
+                <th>Владелец</th>
+                <th>Статус</th>
+                <th>Время / Exit</th>
+                <th>Input</th>
+                <th>Ошибка</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="runs-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: SESSIONS -->
+    <section id="tab-sessions" class="tab-pane hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>Сессии клиентов</h2>
+          <button class="btn" id="btn-reload-sessions">Обновить</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Session ID</th>
+                <th>Владелец</th>
+                <th>Провайдер / Модель</th>
+                <th>Ходов</th>
+                <th>Provider Session</th>
+                <th>Last Response ID</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="sessions-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: FILES -->
+    <section id="tab-files" class="tab-pane hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>Загруженные файлы</h2>
+          <form id="upload-file-form" class="row">
+            <input type="text" id="upload-owner" value="admin" placeholder="owner_id" style="width:120px;">
+            <input type="file" id="upload-file-input" required>
+            <button type="submit" class="btn primary">Загрузить</button>
+          </form>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>File ID</th>
+                <th>Имя файла</th>
+                <th>Владелец</th>
+                <th>Размер</th>
+                <th>Active Refs</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="files-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: KEYS -->
+    <section id="tab-keys" class="tab-pane hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>Клиентские API-ключи</h2>
+          <button class="btn primary" id="btn-open-create-key">+ Выпустить API-ключ</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Имя</th>
+                <th>Owner ID</th>
+                <th>Разрешённые модели</th>
+                <th>Max Concurrent</th>
+                <th>Статус</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="keys-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: PLAYGROUND -->
+    <section id="tab-playground" class="tab-pane hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>Интерактивная песочница (Streaming SSE)</h2>
+          <span class="pill muted" id="pg-meta">Готово</span>
+        </div>
+        <form id="playground-form">
+          <div class="grid-2" style="margin-bottom:10px;">
+            <div class="field">
+              <label for="pg-model">Модель</label>
+              <select id="pg-model" required></select>
+            </div>
+            <div class="field">
+              <label for="pg-prev">previous_response_id (необязательно)</label>
+              <div class="row">
+                <input type="text" id="pg-prev" placeholder="resp_..." style="flex:1;">
+                <button type="button" class="btn sm" id="btn-pg-clear-prev">Сброс</button>
+              </div>
+            </div>
+          </div>
+          <div class="grid-2" style="margin-bottom:10px;">
+            <div class="field">
+              <label for="pg-owner">Owner ID (для изоляции сессии)</label>
+              <input type="text" id="pg-owner" value="admin">
+            </div>
+            <div class="field">
+              <label for="pg-file-id">Прикрепить File ID (опционально)</label>
+              <input type="text" id="pg-file-id" placeholder="file_...">
+            </div>
+          </div>
+          <div class="field">
+            <label for="pg-inst">System Instructions (опционально)</label>
+            <input type="text" id="pg-inst" placeholder="Отвечай кратко и по делу.">
+          </div>
+          <div class="field">
+            <label for="pg-prompt">Промпт (будет передан через ./input/prompt.md)</label>
+            <textarea id="pg-prompt" rows="6" placeholder="Введите задачу или вопрос для CLI-агента / Ollama..."></textarea>
+          </div>
+          <div class="row" style="margin-bottom:12px;">
+            <button type="submit" class="btn primary" id="btn-pg-run">Выполнить (Stream)</button>
+            <button type="button" class="btn danger hidden" id="btn-pg-abort">Прервать</button>
+            <button type="button" class="btn hidden" id="btn-pg-chain">Продолжить эту сессию</button>
+          </div>
+        </form>
+        <div class="field">
+          <label>Ответ модели</label>
+          <pre id="pg-output" style="min-height:140px;"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: CONFIG -->
+    <section id="tab-config" class="tab-pane hidden">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h2>Команды управления сервисом</h2></div>
+          <pre>Локально (scripts/gateway.sh или make):
+  ./scripts/gateway.sh start
+  ./scripts/gateway.sh status
+  ./scripts/gateway.sh restart
+  ./scripts/gateway.sh stop
+  ./scripts/gateway.sh logs
+
+systemd (Ubuntu/Debian):
+  sudo systemctl status cli-ai-gateway
+  sudo systemctl restart cli-ai-gateway
+  sudo systemctl stop cli-ai-gateway
+  sudo journalctl -u cli-ai-gateway -f
+
+Docker Compose:
+  docker compose up -d --build
+  docker compose restart gateway
+  docker compose stop
+  docker compose logs -f gateway</pre>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Авторизация CLI-агентов</h2></div>
+          <pre>Codex CLI:
+  CODEX_HOME=/var/lib/cli-gateway/homes/codex codex login
+
+Antigravity CLI:
+  HOME=/var/lib/cli-gateway/homes/antigravity agy
+
+Gemini CLI:
+  HOME=/var/lib/cli-gateway/homes/gemini gemini
+
+Claude CLI:
+  HOME=/var/lib/cli-gateway/homes/claude claude auth login
+
+Ollama:
+  ollama serve
+  ollama pull qwen3</pre>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Активная конфигурация (секреты скрыты)</h2>
+          <button class="btn" id="btn-reload-config">Обновить</button>
+        </div>
+        <pre id="config-json">Загрузка...</pre>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal-backdrop" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="card-head">
+      <h2 id="modal-title">Модальное окно</h2>
+      <button class="btn sm" id="modal-close">Закрыть</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let activeTab = "models";
+  let authRequired = true;
+  let lastPlaygroundResponseId = "";
+  let pgAbortCtrl = null;
+  let pollTimer = null;
+
+  function showToast(msg, isErr = false) {
+    const el = $("toast");
+    el.textContent = msg;
+    el.className = isErr ? "toast err" : "toast";
+    setTimeout(() => { el.className = "toast hidden"; }, 3400);
+  }
+
+  function clearEl(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
+  function mk(tag, attrs = {}, text = null) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") el.className = v;
+      else if (k === "style") el.setAttribute("style", v);
+      else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2).toLowerCase(), v);
+      else el.setAttribute(k, v);
+    }
+    if (text !== null && text !== undefined) el.textContent = String(text);
+    return el;
+  }
+
+  function fmtBytes(n) {
+    if (!n) return "0 B";
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  }
+
+  function fmtDuration(sec) {
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    if (m < 60) return `${m}m ${sec % 60}s`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return "-";
+    return new Date(ts * 1000).toLocaleString();
+  }
+
+  async function api(path, opts = {}) {
+    const headers = Object.assign({ "X-Admin-UI": "1" }, opts.headers || {});
+    if (opts.json !== undefined) {
+      headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(opts.json);
+    }
+    const resp = await fetch("/admin/api" + path, Object.assign({}, opts, { headers }));
+    if (resp.status === 401 && path !== "/login" && path !== "/auth") {
+      showLogin();
+      throw new Error("Требуется авторизация");
+    }
+    const text = await resp.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (_) {}
+    if (!resp.ok) {
+      throw new Error((data.error && data.error.message) || text || `HTTP ${resp.status}`);
+    }
+    return data;
+  }
+
+  function openModal(title, nodeOrText) {
+    $("modal-title").textContent = title;
+    const body = $("modal-body");
+    clearEl(body);
+    if (typeof nodeOrText === "string") {
+      body.appendChild(mk("pre", {}, nodeOrText));
+    } else {
+      body.appendChild(nodeOrText);
+    }
+    $("modal-backdrop").classList.remove("hidden");
+  }
+
+  function closeModal() {
+    $("modal-backdrop").classList.add("hidden");
+  }
+
+  $("modal-close").onclick = closeModal;
+  $("modal-backdrop").onclick = (e) => { if (e.target === $("modal-backdrop")) closeModal(); };
+
+  function showLogin() {
+    $("app").classList.add("hidden");
+    $("login-screen").classList.remove("hidden");
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function showApp() {
+    $("login-screen").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    if (authRequired) $("btn-logout").classList.remove("hidden");
+    refreshAll();
+    if (!pollTimer) {
+      pollTimer = setInterval(() => {
+        if ($("auto-refresh").checked && !$("app").classList.contains("hidden")) {
+          loadStatus();
+          if (activeTab === "runs") loadRuns();
+        }
+      }, 4000);
+    }
+  }
+
+  $("login-form").onsubmit = async (e) => {
+    e.preventDefault();
+    $("login-error").textContent = "";
+    try {
+      await api("/login", { method: "POST", json: { token: $("login-token").value } });
+      $("login-token").value = "";
+      showApp();
+    } catch (err) {
+      $("login-error").textContent = err.message;
+    }
+  };
+
+  $("btn-logout").onclick = async () => {
+    await api("/logout", { method: "POST" }).catch(() => {});
+    showLogin();
+  };
+
+  // Tabs switching
+  $("tabs").querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.onclick = () => {
+      activeTab = btn.dataset.tab;
+      $("tabs").querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      document.querySelectorAll(".tab-pane").forEach((p) => p.classList.toggle("hidden", p.id !== "tab-" + activeTab));
+      loadActiveTab();
+    };
+  });
+
+  $("btn-refresh").onclick = () => refreshAll();
+  $("btn-cleanup").onclick = async () => {
+    try {
+      const res = await api("/cleanup", { method: "POST" });
+      showToast(`Очищено: файлов ${res.expired_files_removed}, сессий/запусков ${res.expired_sessions_runs_removed}`);
+      refreshAll();
+    } catch (err) { showToast(err.message, true); }
+  };
+
+  async function refreshAll() {
+    await Promise.allSettled([loadStatus(), loadActiveTab()]);
+  }
+
+  function loadActiveTab() {
+    switch (activeTab) {
+      case "models": return loadModels();
+      case "runs": return loadRuns();
+      case "sessions": return loadSessions();
+      case "files": return loadFiles();
+      case "keys": return loadKeys();
+      case "playground": return loadModelsForPlayground();
+      case "config": return loadConfig();
+    }
+  }
+
+  async function loadStatus() {
+    try {
+      const s = await api("/status");
+      const pill = $("hdr-status");
+      pill.textContent = `status: ${s.status}`;
+      pill.className = "pill " + (s.status === "ok" ? "ok" : s.status === "degraded" ? "degraded" : "bad");
+      $("hdr-uptime").textContent = `uptime: ${fmtDuration(s.uptime_seconds)}`;
+
+      $("st-proc").textContent = `${s.process.active_global} / ${s.process.max_global_processes}`;
+      $("st-queue").textContent = `Очередь: ${s.process.queued} / ${s.process.max_queue_size}`;
+      $("st-models").textContent = `${s.counts.ready_models} / ${s.counts.total_models}`;
+      $("st-db").textContent = `SQLite: ${s.db_ok ? "ok" : "error"}`;
+      $("st-runs").textContent = `${s.counts.active_runs} / ${s.counts.total_runs}`;
+      $("st-sess").textContent = `Сессий: ${s.counts.sessions}`;
+      $("st-storage").textContent = `${fmtBytes(s.storage.used_bytes)} / ${fmtBytes(s.storage.quota_bytes)}`;
+      $("st-files").textContent = `Файлов: ${s.storage.file_count}`;
+      $("st-keys").textContent = `${s.counts.active_keys}`;
+      $("st-listen").textContent = `Bind: ${s.listen}`;
+    } catch (_) {}
+  }
+
+  // MODELS
+  async function loadModels() {
+    const res = await api("/models");
+    const tbody = $("models-tbody");
+    clearEl(tbody);
+    for (const m of res.data || []) {
+      const tr = mk("tr");
+      const idTd = mk("td", { class: "mono" });
+      idTd.appendChild(mk("div", {}, m.id));
+      if (m.dynamic) idTd.appendChild(mk("span", { class: "pill muted" }, "dynamic"));
+      tr.appendChild(idTd);
+
+      const target = m.provider === "ollama" ? `${m.model} @ ${m.base_url}` : (m.executable || m.model || "-");
+      const provTd = mk("td");
+      provTd.appendChild(mk("div", { style: "font-weight:600" }, m.provider));
+      provTd.appendChild(mk("div", { class: "mono truncate", title: target }, target));
+      tr.appendChild(provTd);
+
+      const stTd = mk("td");
+      stTd.appendChild(mk("span", { class: "pill " + (m.ready ? "ok" : "bad") }, m.ready ? "ready" : "unavailable"));
+      if (m.error) stTd.appendChild(mk("div", { class: "mono", style: "color:#fca5a5;margin-top:4px;max-width:260px;" }, m.error));
+      tr.appendChild(stTd);
+
+      const enTd = mk("td");
+      enTd.appendChild(mk("span", { class: "pill " + (m.enabled ? "ok" : "muted") }, m.enabled ? "вкл" : "выкл"));
+      tr.appendChild(enTd);
+
+      tr.appendChild(mk("td", { class: "mono" }, `timeout=${m.timeout_seconds}s\nmax=${m.max_concurrent}`));
+
+      const caps = [];
+      if (m.capabilities.streaming) caps.push("stream");
+      if (m.capabilities.session_resume) caps.push("resume");
+      if (m.capabilities.file_input) caps.push("files");
+      if (m.capabilities.token_usage) caps.push("usage");
+      tr.appendChild(mk("td", { class: "mono" }, caps.join(", ")));
+
+      const actTd = mk("td");
+      const row = mk("div", { class: "row" });
+      row.appendChild(mk("button", {
+        class: "btn sm",
+        onclick: async () => {
+          try {
+            const p = await api(`/models/${encodeURIComponent(m.id)}/check`, { method: "POST" });
+            showToast(`${m.id}: ${p.ready ? "ready" : p.error}`);
+            loadModels();
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, "Проверить"));
+      row.appendChild(mk("button", {
+        class: "btn sm " + (m.enabled ? "danger" : "ok"),
+        onclick: async () => {
+          try {
+            await api(`/models/${encodeURIComponent(m.id)}`, { method: "PATCH", json: { enabled: !m.enabled } });
+            showToast(`Модель ${m.id} ${!m.enabled ? "включена" : "отключена"}`);
+            loadModels();
+            loadStatus();
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, m.enabled ? "Отключить" : "Включить"));
+      row.appendChild(mk("button", {
+        class: "btn sm",
+        onclick: () => openEditModelModal(m)
+      }, "Изменить"));
+      if (m.dynamic) {
+        row.appendChild(mk("button", {
+          class: "btn sm danger",
+          onclick: async () => {
+            if (!confirm(`Удалить динамическую модель ${m.id}?`)) return;
+            try {
+              await api(`/models/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+              showToast(`Модель ${m.id} удалена`);
+              loadModels();
+            } catch (err) { showToast(err.message, true); }
+          }
+        }, "Удалить"));
+      }
+      actTd.appendChild(row);
+      tr.appendChild(actTd);
+      tbody.appendChild(tr);
+    }
+  }
+
+  function openEditModelModal(m) {
+    const form = mk("form");
+    const fTimeout = mk("input", { type: "number", value: m.timeout_seconds, min: 1, max: 86400 });
+    const fMax = mk("input", { type: "number", value: m.max_concurrent, min: 1, max: 256 });
+    const fVariant = mk("input", { type: "text", value: m.model || "", placeholder: "модель провайдера (напр. qwen3 / gpt-5.3-codex)" });
+    const fBaseURL = mk("input", { type: "text", value: m.base_url || "", placeholder: "http://127.0.0.1:11434" });
+
+    const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
+    form.appendChild(wrap("Timeout (сек)", fTimeout));
+    form.appendChild(wrap("Max Concurrent", fMax));
+    form.appendChild(wrap("Имя модели провайдера", fVariant));
+    if (m.provider === "ollama") form.appendChild(wrap("Ollama Base URL", fBaseURL));
+
+    form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Сохранить"));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const payload = {
+        timeout_seconds: parseInt(fTimeout.value, 10),
+        max_concurrent: parseInt(fMax.value, 10),
+        model: fVariant.value
+      };
+      if (m.provider === "ollama") payload.base_url = fBaseURL.value;
+      try {
+        await api(`/models/${encodeURIComponent(m.id)}`, { method: "PATCH", json: payload });
+        closeModal();
+        showToast(`Настройки ${m.id} сохранены`);
+        loadModels();
+      } catch (err) { showToast(err.message, true); }
+    };
+    openModal(`Редактировать модель: ${m.id}`, form);
+  }
+
+  $("btn-check-all-models").onclick = async () => {
+    await loadModels();
+    await loadStatus();
+    showToast("Готовность всех моделей обновлена");
+  };
+
+  $("btn-open-add-model").onclick = () => {
+    const form = mk("form");
+    const fId = mk("input", { type: "text", placeholder: "local-llama3", required: true });
+    const fUrl = mk("input", { type: "text", value: "http://127.0.0.1:11434", required: true });
+    const fModel = mk("input", { type: "text", placeholder: "llama3.2", required: true });
+    const fTime = mk("input", { type: "number", value: 600, min: 1 });
+    const fMax = mk("input", { type: "number", value: 4, min: 1 });
+    const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
+    form.appendChild(wrap("ID модели в шлюзе", fId));
+    form.appendChild(wrap("Ollama Base URL", fUrl));
+    form.appendChild(wrap("Ollama имя модели", fModel));
+    form.appendChild(wrap("Timeout (сек)", fTime));
+    form.appendChild(wrap("Max Concurrent", fMax));
+    form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Добавить"));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api("/models", {
+          method: "POST",
+          json: {
+            id: fId.value.trim(),
+            provider: "ollama",
+            base_url: fUrl.value.trim(),
+            model: fModel.value.trim(),
+            timeout_seconds: parseInt(fTime.value, 10),
+            max_concurrent: parseInt(fMax.value, 10)
+          }
+        });
+        closeModal();
+        showToast(`Модель ${fId.value.trim()} добавлена`);
+        loadModels();
+        loadStatus();
+      } catch (err) { showToast(err.message, true); }
+    };
+    openModal("Добавить локальную Ollama-модель", form);
+  };
+
+  // RUNS
+  async function loadRuns() {
+    const st = $("runs-filter").value;
+    const res = await api(`/runs?status=${encodeURIComponent(st)}&limit=100`);
+    const tbody = $("runs-tbody");
+    clearEl(tbody);
+    for (const r of res.data || []) {
+      const tr = mk("tr");
+      tr.appendChild(mk("td", { class: "mono" }, r.id));
+      tr.appendChild(mk("td", { class: "mono" }, `${r.model}\n(${r.provider})`));
+      tr.appendChild(mk("td", { class: "mono" }, r.owner_id));
+      const stCls = r.status === "completed" ? "ok" : (r.status === "running" || r.status === "queued") ? "degraded" : "bad";
+      tr.appendChild(mk("td", {}, "")).appendChild(mk("span", { class: "pill " + stCls }, r.status));
+      tr.appendChild(mk("td", { class: "mono" }, `${r.duration_ms || 0} ms\nexit: ${r.exit_code !== undefined ? r.exit_code : "-"}`));
+      tr.appendChild(mk("td", { class: "mono" }, fmtBytes(r.input_bytes)));
+      tr.appendChild(mk("td", { class: "mono truncate", title: r.error_message || "" }, r.error_message || r.error_type || "-"));
+
+      const act = mk("td");
+      const row = mk("div", { class: "row" });
+      row.appendChild(mk("button", {
+        class: "btn sm",
+        onclick: async () => {
+          try {
+            const d = await api(`/runs/${encodeURIComponent(r.id)}`);
+            openModal(`Run ${r.id}`, JSON.stringify(d, null, 2));
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, "Детали"));
+      if (r.live_active || r.status === "running") {
+        row.appendChild(mk("button", {
+          class: "btn sm danger",
+          onclick: async () => {
+            try {
+              await api(`/runs/${encodeURIComponent(r.id)}/cancel`, { method: "POST" });
+              showToast(`Отправлен сигнал остановки ${r.id}`);
+              loadRuns();
+              loadStatus();
+            } catch (err) { showToast(err.message, true); }
+          }
+        }, "Остановить"));
+      }
+      act.appendChild(row);
+      tr.appendChild(act);
+      tbody.appendChild(tr);
+    }
+  }
+  $("runs-filter").onchange = loadRuns;
+  $("btn-reload-runs").onclick = loadRuns;
+
+  // SESSIONS
+  async function loadSessions() {
+    const res = await api("/sessions?limit=100");
+    const tbody = $("sessions-tbody");
+    clearEl(tbody);
+    for (const s of res.data || []) {
+      const tr = mk("tr");
+      tr.appendChild(mk("td", { class: "mono" }, s.gateway_session_id));
+      tr.appendChild(mk("td", { class: "mono" }, s.owner_id));
+      tr.appendChild(mk("td", { class: "mono" }, `${s.provider} / ${s.model}`));
+      tr.appendChild(mk("td", { class: "mono" }, String(s.turn_count)));
+      tr.appendChild(mk("td", { class: "mono truncate", title: s.provider_session_id || "" }, s.provider_session_id || "-"));
+      tr.appendChild(mk("td", { class: "mono" }, s.last_response_id || "-"));
+
+      const act = mk("td");
+      const row = mk("div", { class: "row" });
+      row.appendChild(mk("button", {
+        class: "btn sm",
+        onclick: async () => {
+          try {
+            const d = await api(`/sessions/${encodeURIComponent(s.gateway_session_id)}`);
+            openModal(`Сессия ${s.gateway_session_id}`, JSON.stringify(d, null, 2));
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, "История"));
+      if (s.last_response_id) {
+        row.appendChild(mk("button", {
+          class: "btn sm",
+          onclick: () => {
+            $("pg-prev").value = s.last_response_id;
+            $("pg-owner").value = s.owner_id;
+            document.querySelector('[data-tab="playground"]').click();
+            showToast(`Подставлен ${s.last_response_id} в песочницу`);
+          }
+        }, "В песочницу"));
+      }
+      row.appendChild(mk("button", {
+        class: "btn sm danger",
+        onclick: async () => {
+          if (!confirm(`Удалить сессию ${s.gateway_session_id}?`)) return;
+          try {
+            await api(`/sessions/${encodeURIComponent(s.gateway_session_id)}`, { method: "DELETE" });
+            showToast("Сессия удалена");
+            loadSessions();
+            loadStatus();
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, "Удалить"));
+      act.appendChild(row);
+      tr.appendChild(act);
+      tbody.appendChild(tr);
+    }
+  }
+  $("btn-reload-sessions").onclick = loadSessions;
+
+  // FILES
+  async function loadFiles() {
+    const res = await api("/files?limit=200");
+    const tbody = $("files-tbody");
+    clearEl(tbody);
+    for (const f of res.data || []) {
+      const tr = mk("tr");
+      tr.appendChild(mk("td", { class: "mono" }, f.id));
+      tr.appendChild(mk("td", { class: "mono" }, f.filename));
+      tr.appendChild(mk("td", { class: "mono" }, f.owner_id));
+      tr.appendChild(mk("td", { class: "mono" }, fmtBytes(f.bytes)));
+      tr.appendChild(mk("td", { class: "mono" }, String(f.active_refs)));
+      const act = mk("td");
+      const row = mk("div", { class: "row" });
+      row.appendChild(mk("button", {
+        class: "btn sm",
+        onclick: async () => {
+          const resp = await fetch(`/admin/api/files/${encodeURIComponent(f.id)}/content`, { headers: { "X-Admin-UI": "1" } });
+          const txt = await resp.text();
+          openModal(`Файл ${f.filename} (${f.id})`, txt);
+        }
+      }, "Просмотр"));
+      row.appendChild(mk("button", {
+        class: "btn sm",
+        onclick: () => {
+          $("pg-file-id").value = f.id;
+          $("pg-owner").value = f.owner_id;
+          document.querySelector('[data-tab="playground"]').click();
+          showToast(`File ID ${f.id} подставлен в песочницу`);
+        }
+      }, "В песочницу"));
+      row.appendChild(mk("button", {
+        class: "btn sm danger",
+        onclick: async () => {
+          try {
+            await api(`/files/${encodeURIComponent(f.id)}`, { method: "DELETE" });
+            showToast(`Файл ${f.id} удалён`);
+            loadFiles();
+            loadStatus();
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, "Удалить"));
+      act.appendChild(row);
+      tr.appendChild(act);
+      tbody.appendChild(tr);
+    }
+  }
+
+  $("upload-file-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const fi = $("upload-file-input");
+    if (!fi.files || !fi.files.length) return;
+    const fd = new FormData();
+    fd.append("owner_id", $("upload-owner").value.trim() || "admin");
+    fd.append("file", fi.files[0]);
+    try {
+      const resp = await fetch("/admin/api/files", {
+        method: "POST",
+        headers: { "X-Admin-UI": "1" },
+        body: fd
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error((data.error && data.error.message) || "Ошибка загрузки");
+      fi.value = "";
+      showToast(`Загружен ${data.id} (${fmtBytes(data.bytes)})`);
+      loadFiles();
+      loadStatus();
+    } catch (err) { showToast(err.message, true); }
+  };
+
+  // KEYS
+  async function loadKeys() {
+    const res = await api("/keys");
+    const tbody = $("keys-tbody");
+    clearEl(tbody);
+    for (const k of res.data || []) {
+      const tr = mk("tr");
+      tr.appendChild(mk("td", { class: "mono" }, k.id));
+      tr.appendChild(mk("td", {}, k.name));
+      tr.appendChild(mk("td", { class: "mono" }, k.owner_id));
+      tr.appendChild(mk("td", { class: "mono" }, (k.allowed_models || []).join(", ")));
+      tr.appendChild(mk("td", { class: "mono" }, String(k.max_concurrent)));
+      tr.appendChild(mk("td", {}, "")).appendChild(mk("span", { class: "pill " + (k.revoked ? "bad" : "ok") }, k.revoked ? "отозван" : "активен"));
+
+      const act = mk("td");
+      const row = mk("div", { class: "row" });
+      row.appendChild(mk("button", { class: "btn sm", onclick: () => openEditKeyModal(k) }, "Изменить"));
+      row.appendChild(mk("button", {
+        class: "btn sm " + (k.revoked ? "ok" : "danger"),
+        onclick: async () => {
+          try {
+            await api(`/keys/${encodeURIComponent(k.id)}/${k.revoked ? "unrevoke" : "revoke"}`, { method: "POST" });
+            showToast(`Ключ ${k.id} ${k.revoked ? "восстановлен" : "отозван"}`);
+            loadKeys();
+            loadStatus();
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, k.revoked ? "Восстановить" : "Отозвать"));
+      row.appendChild(mk("button", {
+        class: "btn sm danger",
+        onclick: async () => {
+          if (!confirm(`Удалить API-ключ ${k.id}?`)) return;
+          try {
+            await api(`/keys/${encodeURIComponent(k.id)}`, { method: "DELETE" });
+            showToast(`Ключ ${k.id} удалён`);
+            loadKeys();
+            loadStatus();
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, "Удалить"));
+      act.appendChild(row);
+      tr.appendChild(act);
+      tbody.appendChild(tr);
+    }
+  }
+
+  $("btn-open-create-key").onclick = () => {
+    const form = mk("form");
+    const fOwner = mk("input", { type: "text", placeholder: "service-kb", required: true });
+    const fName = mk("input", { type: "text", placeholder: "KB Production" });
+    const fModels = mk("input", { type: "text", value: "*", placeholder: "* или codex,local-qwen" });
+    const fConc = mk("input", { type: "number", value: 4, min: 1, max: 256 });
+    const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
+    form.appendChild(wrap("Owner ID", fOwner));
+    form.appendChild(wrap("Название", fName));
+    form.appendChild(wrap("Разрешённые модели (через запятую)", fModels));
+    form.appendChild(wrap("Max Concurrent", fConc));
+    form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Создать"));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const models = fModels.value.split(",").map((s) => s.trim()).filter(Boolean);
+      try {
+        const res = await api("/keys", {
+          method: "POST",
+          json: {
+            owner_id: fOwner.value.trim(),
+            name: fName.value.trim(),
+            allowed_models: models.length ? models : ["*"],
+            max_concurrent: parseInt(fConc.value, 10) || 4
+          }
+        });
+        const box = mk("div");
+        box.appendChild(mk("p", { style: "color:#fcd34d;margin-top:0;" }, "Сохраните ключ сейчас — в базе хранится только SHA-256 хеш, повторно просмотреть секрет нельзя:"));
+        const pre = mk("pre", {}, res.token);
+        box.appendChild(pre);
+        box.appendChild(mk("div", { style: "margin-top:10px;" }, "")).appendChild(mk("button", {
+          class: "btn primary",
+          onclick: () => {
+            navigator.clipboard && navigator.clipboard.writeText(res.token);
+            showToast("Ключ скопирован");
+          }
+        }, "Скопировать ключ"));
+        openModal(`Ключ ${res.key.id} создан`, box);
+        loadKeys();
+        loadStatus();
+      } catch (err) { showToast(err.message, true); }
+    };
+    openModal("Выпустить новый API-ключ", form);
+  };
+
+  function openEditKeyModal(k) {
+    const form = mk("form");
+    const fName = mk("input", { type: "text", value: k.name || "" });
+    const fModels = mk("input", { type: "text", value: (k.allowed_models || ["*"]).join(", ") });
+    const fConc = mk("input", { type: "number", value: k.max_concurrent || 4, min: 1, max: 256 });
+    const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
+    form.appendChild(wrap("Название", fName));
+    form.appendChild(wrap("Разрешённые модели (через запятую)", fModels));
+    form.appendChild(wrap("Max Concurrent", fConc));
+    form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Сохранить"));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const models = fModels.value.split(",").map((s) => s.trim()).filter(Boolean);
+      try {
+        await api(`/keys/${encodeURIComponent(k.id)}`, {
+          method: "PATCH",
+          json: { name: fName.value.trim(), allowed_models: models, max_concurrent: parseInt(fConc.value, 10) }
+        });
+        closeModal();
+        showToast(`Ключ ${k.id} обновлён`);
+        loadKeys();
+      } catch (err) { showToast(err.message, true); }
+    };
+    openModal(`Редактировать ключ: ${k.id}`, form);
+  }
+
+  // PLAYGROUND
+  async function loadModelsForPlayground() {
+    const res = await api("/models");
+    const sel = $("pg-model");
+    const prev = sel.value;
+    clearEl(sel);
+    for (const m of (res.data || []).filter((x) => x.enabled)) {
+      sel.appendChild(mk("option", { value: m.id }, `${m.id} (${m.provider}${m.ready ? "" : " · unavailable"})`));
+    }
+    if (prev) sel.value = prev;
+  }
+
+  $("btn-pg-clear-prev").onclick = () => { $("pg-prev").value = ""; };
+  $("btn-pg-chain").onclick = () => {
+    if (lastPlaygroundResponseId) {
+      $("pg-prev").value = lastPlaygroundResponseId;
+      showToast(`Подставлен ${lastPlaygroundResponseId}`);
+    }
+  };
+  $("btn-pg-abort").onclick = () => { if (pgAbortCtrl) pgAbortCtrl.abort(); };
+
+  $("playground-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const out = $("pg-output");
+    out.textContent = "";
+    $("pg-meta").textContent = "Выполняется...";
+    $("btn-pg-run").disabled = true;
+    $("btn-pg-abort").classList.remove("hidden");
+    $("btn-pg-chain").classList.add("hidden");
+    pgAbortCtrl = new AbortController();
+
+    const fid = $("pg-file-id").value.trim();
+    const t0 = Date.now();
+    try {
+      const resp = await fetch("/admin/api/playground", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-UI": "1" },
+        signal: pgAbortCtrl.signal,
+        body: JSON.stringify({
+          owner_id: $("pg-owner").value.trim() || "admin",
+          model: $("pg-model").value,
+          instructions: $("pg-inst").value,
+          prompt: $("pg-prompt").value,
+          previous_response_id: $("pg-prev").value.trim(),
+          file_ids: fid ? [fid] : [],
+          stream: true
+        })
+      });
+      if (!resp.ok) {
+        const errTxt = await resp.text();
+        let msg = errTxt;
+        try { msg = JSON.parse(errTxt).error.message || errTxt; } catch (_) {}
+        throw new Error(msg);
+      }
+
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let curEv = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const rawLine of lines) {
+          const line = rawLine.replace(/\r$/, "");
+          if (line.startsWith("event:")) curEv = line.slice(6).trim();
+          else if (line.startsWith("data:")) {
+            const raw = line.slice(5).trim();
+            if (!raw) continue;
+            try {
+              const ev = JSON.parse(raw);
+              if (curEv === "response.output_text.delta" && ev.delta) {
+                out.textContent += ev.delta;
+              } else if (curEv === "response.completed" && ev.response) {
+                lastPlaygroundResponseId = ev.response.id || "";
+                const u = ev.response.usage || {};
+                $("pg-meta").textContent = `OK · ${lastPlaygroundResponseId} · ${Date.now() - t0} ms · tokens ${u.total_tokens || 0}`;
+                if (lastPlaygroundResponseId) $("btn-pg-chain").classList.remove("hidden");
+              } else if (curEv === "error") {
+                out.textContent += `\n[ERROR] ${ev.message || raw}`;
+                $("pg-meta").textContent = "Ошибка выполнения";
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name === "AbortError") {
+        $("pg-meta").textContent = "Прервано оператором";
+      } else {
+        out.textContent += `\n[ERR] ${err.message}`;
+        $("pg-meta").textContent = "Ошибка";
+      }
+    } finally {
+      $("btn-pg-run").disabled = false;
+      $("btn-pg-abort").classList.add("hidden");
+      pgAbortCtrl = null;
+      loadStatus();
+    }
+  };
+
+  // CONFIG
+  async function loadConfig() {
+    const cfg = await api("/config");
+    $("config-json").textContent = JSON.stringify(cfg, null, 2);
+  }
+  $("btn-reload-config").onclick = loadConfig;
+
+  // INIT
+  (async () => {
+    try {
+      const a = await api("/auth");
+      authRequired = !!a.auth_required;
+      if (a.authenticated) showApp();
+      else showLogin();
+    } catch (_) {
+      showLogin();
+    }
+  })();
+})();
+</script>
+</body>
+</html>
