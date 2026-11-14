@@ -33,8 +33,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
-    cpus: "2.0"
-    mem_limit: 2g
+    cpus: "${GATEWAY_CPUS:-1.0}"
+    mem_limit: ${GATEWAY_MEM_LIMIT:-512m}
     pids_limit: 256
     extra_hosts:
       - "host.docker.internal:host-gateway"

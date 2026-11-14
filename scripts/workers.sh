@@ -179,8 +179,8 @@ EOF
       - /tmp:rw,nosuid,nodev,size=512m
     expose:
       - "9090"
-    cpus: "1.0"
-    mem_limit: 1g
+    cpus: "\${WORKER_CPUS:-1.0}"
+    mem_limit: \${WORKER_MEM_LIMIT:-1g}
     pids_limit: 128
     environment:
       GATEWAY_WORKER_TOKEN: "\${GATEWAY_WORKER_TOKEN:-dev-worker-token-change-me}"
