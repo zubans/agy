@@ -1,174 +1,125 @@
 # CLI AI Gateway
 
-Unified OpenAI-compatible HTTP gateway in Go for executing prompts and large file-based tasks through locally installed AI CLI tools (`Codex CLI`, `Antigravity CLI`, `Gemini CLI`, `Claude CLI`) and local `Ollama` models.
+Unified OpenAI-compatible HTTP gateway in Go for executing prompts and large file-based tasks across containerized AI CLI agents (`Codex CLI`, `Claude Code CLI`, `Gemini CLI`, `Antigravity CLI` — single or multiple isolated accounts such as `agy-1`, `agy-2`, `agy-3`) and local or remote `Ollama` servers.
 
 ## Architecture Overview
 
 ```text
-Client -> prompt.md -> POST /v1/files -> POST /v1/responses -> Go Gateway -> CLI Adapter / Ollama -> OpenAI Response
+Client -> POST /v1/responses -> gateway container (8080, zero CLIs)
+                                   |-- http://codex:9090  -> codex container (codex + volume codex_home)
+                                   |-- http://claude:9090 -> claude container (claude + volume claude_home)
+                                   |-- http://gemini:9090 -> gemini container (gemini + volume gemini_home)
+                                   |-- http://agy-1:9090  -> agy-1 container (agy + volume agy_1_home)
+                                   |-- http://agy-2:9090  -> agy-2 container (agy + volume agy_2_home)
+                                   |-- http://agy-3:9090  -> agy-3 container (agy + volume agy_3_home)
+                                   `-- http://<host>:11434 -> remote / local Ollama API
 ```
 
-- **Single Go binary** using standard library `net/http`, `os/exec`, `context.Context`, `encoding/json`, `mime/multipart`, `log/slog`.
-- **SQLite metadata store** (`modernc.org/sqlite`, WAL mode) for API keys (SHA-256 hashes), file metadata, sessions, responses, and runs — large prompt payloads stay on disk, never inside SQLite.
-- **Filesystem isolation**: uploaded files in `files/`, conversation transcripts in `sessions/<id>/`, per-run isolated workspaces in `runs/<id>/input/`.
-- **Strict process execution**: typed argument slices only (never shell concatenation), process-group cleanup (`Setpgid` + `SIGKILL` on timeout/client disconnect), sanitized environment per executor, bounded line-by-line stdout reading (supports arbitrary JSON line lengths), global/executor/user concurrency limits.
+- **Zero host CLI dependencies**: Every CLI client is installed inside its own purpose-built Docker image (`worker-codex`, `worker-claude`, `worker-gemini`, `worker-agy`). Multi-account setups run one dedicated container and volume per instance (`agy-1`, `agy-2`, `agy-3`), keeping credentials and sessions strictly separated without mounting `docker.sock`.
+- **Single Go binary (`gateway` & `-worker` modes)**: Uses Go standard library `net/http`, `os/exec`, `context.Context`, `encoding/json`, `mime/multipart`, `log/slog`.
+- **Stateless worker HTTP protocol (`internal/worker`)**: `gateway` streams workspace input files and instructions over `POST /worker/execute` (`multipart/form-data` + `application/x-ndjson`) protected by `GATEWAY_WORKER_TOKEN` Bearer auth; each worker stages into a temporary run directory, enforces PGID cancellation on disconnect/timeout, and removes temporary files before emitting the completion frame.
+- **SQLite metadata store** (`modernc.org/sqlite`, WAL mode) for API keys (SHA-256 hashes), file metadata, sessions, responses, runs, and dynamic/overridden models (`model_overrides`).
+- **Embedded Web Admin UI (`/admin/`)**: Manage enabled/disabled models, `timeout_seconds`, `max_concurrent`, `worker_url` / `base_url`, add remote `ollama` or worker-backed CLI models dynamically, inspect/cancel runs, inspect sessions/files, manage API keys, and test live SSE responses.
 
 ## Project Structure
 
-- `cmd/gateway/main.go` — HTTP server, config loader, startup diagnostics, background cleanup, graceful shutdown.
+- `cmd/gateway/main.go` — entrypoint supporting gateway server mode, `-worker` container worker mode, and `-healthcheck`.
 - `cmd/example-client/main.go` — runnable Go client demonstrating `prompt.md` construction, file upload, streaming/sync Responses API.
 - `pkg/client/` — Go client library and deterministic `PromptDocument` (`prompt.md`) builder.
 - `internal/api/` — OpenAI-compatible HTTP handlers (`/v1/models`, `/v1/executors`, `/v1/files`, `/v1/responses`, `/v1/chat/completions`, `/health`, `/ready`).
-- `internal/admin/` — embedded Web Admin UI (`/admin/`, `/admin/api/*`) for managing models, CLI checks, active runs, sessions, files, API keys, and interactive SSE testing.
+- `internal/admin/` — embedded Web Admin UI (`/admin/`, `/admin/api/*`).
+- `internal/worker/` — isolated container worker HTTP server and `RemoteExecutor` client (`GET /worker/health`, `POST /worker/execute`, `GET /livez`).
 - `internal/executor/` — `Executor` interface, `Registry`, and adapters (`codex`, `antigravity`, `gemini`, `claude`, `ollama`).
 - `internal/process/` — concurrency queue/leases, sanitized env builder, unbounded JSONL stream reader, process-group kill.
 - `internal/storage/` — SQLite migrations + startup recovery (`interrupted`), path-traversal/symlink-safe file storage.
 - `internal/session/` — `previous_response_id` resolution, per-session sequential locking, CLI session resume vs file-based history fallback (`context.md`).
-- `internal/streaming/` — separate OpenAI Responses API SSE and Chat Completions SSE translators.
+- `internal/streaming/` — OpenAI Responses API and Chat Completions SSE translators.
 - `internal/auth/` — hashed Bearer API keys, revocation, per-key model allowlists.
-- `migrations/` — embedded SQLite migrations.
-- `configs/` — example configuration (`config.example.yaml`).
-- `scripts/` — daemon lifecycle script (`gateway.sh`: `start`, `stop`, `restart`, `status`, `health`, `ready`, `logs`).
-- `deployments/` — `systemd` service unit (`cli-ai-gateway.service`).
+- `migrations/` — embedded SQLite migrations (`001_init.sql`, `002_admin.sql`, `003_worker.sql`).
+- `configs/` — `config.docker.yaml` (Docker Compose multi-worker stack) and `config.example.yaml` (standalone host/local binary).
+- `Dockerfile` & `compose.yaml` — multi-target builds (`gateway`, `worker-codex`, `worker-claude`, `worker-gemini`, `worker-agy`) with unprivileged UID `10001`, read-only rootfs, `cap_drop: [ALL]`, `no-new-privileges`, and isolated persistent home volumes.
 - `docs/` — operations runbook ([docs/operations.md](docs/operations.md)) and OpenAI compatibility notes ([docs/openai-compatibility.md](docs/openai-compatibility.md)).
-- `tests/` — integration, admin API/UI, security, and official OpenAI Go SDK compatibility tests.
+- `tests/` — integration, admin API/UI, remote worker, security, and official OpenAI Go SDK compatibility tests.
 
-## Quick Start
+## Quick Start (Docker Compose — Ubuntu / macOS)
 
-### 1. Configure
+Only Docker (`docker compose`) and `make` are required on the host machine.
 
-Copy `configs/config.example.yaml` to `config.yaml`, set secure API keys (or `key_sha256`), update `admin.token` (or `GATEWAY_ADMIN_TOKEN`), and adjust model paths/executables:
-
-```bash
-cp configs/config.example.yaml config.yaml
-```
-
-Environment overrides:
-- `GATEWAY_CONFIG` — path to YAML config
-- `GATEWAY_LISTEN` — HTTP bind address (e.g. `127.0.0.1:8080`)
-- `GATEWAY_STORAGE_PATH` — storage directory for SQLite, `files/`, `sessions/`, `runs/`
-- `GATEWAY_SQLITE_PATH` — override SQLite DB file path
-- `GATEWAY_LOG_LEVEL` — `debug`, `info`, `warn`, `error`
-- `GATEWAY_DIAGNOSTIC_LOG` — `true` enables extra diagnostic attributes (keep `false` in production)
-- `GATEWAY_ADMIN_ENABLED` — `true` / `false` to toggle the embedded Web Admin UI (`/admin/`)
-- `GATEWAY_ADMIN_TOKEN` — admin bearer/login token for `/admin/`
-
-### 2. Build, Start, Restart, Stop
-
-Run in background via `Makefile` / `scripts/gateway.sh` (or foreground via `make run`):
+### 1. Initialize `.env` and start all containers
 
 ```bash
-make build
-make start      # start daemon & wait for /health
-make status     # PID, /health and /ready probes
-make logs       # follow data/gateway.log
-make restart    # rebuild, graceful stop (SIGTERM), start
-make stop       # graceful SIGTERM shutdown
+make init   # Creates .env with random GATEWAY_API_KEY, GATEWAY_ADMIN_TOKEN, GATEWAY_WORKER_TOKEN
+make up     # Builds images and starts gateway + codex + claude + gemini + agy-1..agy-3
+make ps     # Verify container status and healthchecks
 ```
 
-Or run directly in the foreground:
+### 2. Authenticate each containerized CLI agent
+
+Credentials stay inside each service's dedicated Docker volume (`claude_home`, `codex_home`, `gemini_home`, `agy_1_home`, `agy_2_home`, `agy_3_home`):
 
 ```bash
-./bin/cli-ai-gateway -config config.yaml
+make claude-login          # Runs `claude auth login` inside the claude container
+make codex-login           # Runs `codex login --device-auth` inside the codex container
+make gemini-login          # Runs interactive Gemini CLI login inside the gemini container
+make agy-1-login           # Runs `agy` login inside agy-1 (or `make agy-login ACCOUNT=1`)
+make agy-2-login           # Runs `agy` login inside agy-2 (or `make agy-login ACCOUNT=2`)
+make agy-3-login           # Runs `agy` login inside agy-3 (or `make agy-login ACCOUNT=3`)
 ```
 
-Verify health and executor readiness:
+### 3. Connect Remote Ollama (Optional)
+
+If Ollama runs on another server (for example `http://10.0.0.50:11434`), set these in `.env` before `make up` (and ensure the Ollama server listens with `OLLAMA_HOST=0.0.0.0:11434`):
+
+```env
+GATEWAY_OLLAMA_BASE_URL=http://10.0.0.50:11434
+GATEWAY_OLLAMA_MODEL=qwen3
+```
+
+You can also add/edit multiple Ollama servers or extra worker containers (`agy-4`, etc.) dynamically in the Web Admin UI at `http://127.0.0.1:8080/admin/`.
+
+### 4. Verify health and run a test call
 
 ```bash
 curl -s http://127.0.0.1:8080/health
 curl -s http://127.0.0.1:8080/ready
+
+# Source generated GATEWAY_API_KEY from .env
+set -a && . ./.env && set +a
+curl -s http://127.0.0.1:8080/v1/responses \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"agy-1","input":"Hello from containerized worker"}'
 ```
 
-Run the example Go client or curl walkthrough:
+Or run the example Go client:
 
 ```bash
-go run ./cmd/example-client -url http://127.0.0.1:8080 -key gw-dev-change-me -model codex
-./examples/curl.sh
+go run ./cmd/example-client -url http://127.0.0.1:8080 -key "$GATEWAY_API_KEY" -model claude
 ```
 
 ## Web Admin Console (`/admin/`)
 
-When `admin.enabled: true` (default in `configs/config.example.yaml`), open `http://127.0.0.1:8080/admin/` and log in with `admin.token` (or `GATEWAY_ADMIN_TOKEN`).
+Open `http://127.0.0.1:8080/admin/` and log in with `GATEWAY_ADMIN_TOKEN` from `.env`:
 
-- Manage enabled/disabled models, `timeout_seconds`, `max_concurrent`, arguments, re-run CLI readiness checks (`Check`), and add/remove local `ollama` models dynamically (persisted in SQLite `model_overrides` across restarts).
-- Inspect active and historical runs and forcibly cancel hung process groups (`POST /admin/api/runs/{id}/cancel`).
-- Issue, scope (`allowed_models`, `max_concurrent`), revoke/unrevoke, and delete client API keys.
-- Inspect/upload/delete files, inspect/delete sessions (`context.md`), trigger TTL cleanup, and run live SSE prompts in the built-in Playground.
+- View all configured models (`Ready / Unavailable`), inspect `worker_url` / `base_url`, toggle enable/disable, tune `timeout_seconds` & `max_concurrent`, and trigger live readiness checks.
+- Dynamically register/delete remote `ollama` models (`base_url`) or additional containerized CLI workers (`worker_url`), persisted across restarts in SQLite `model_overrides`.
+- Inspect active runs and forcibly kill hung worker process groups (`POST /admin/api/runs/{id}/cancel`).
+- Issue, scope, revoke, and delete client API keys, inspect/delete sessions (`context.md`) and files, and run interactive SSE prompts in the Playground.
 
-See the full Russian operations guide in [docs/operations.md](docs/operations.md).
+See the full Russian deployment & operations guide in [docs/operations.md](docs/operations.md).
 
-## Initial CLI Authorization (Interactive Login)
-
-The gateway never extracts or intercepts OAuth tokens. Each CLI must be signed in beforehand using its official login command under the service user (or its isolated `home_dir` configured in `config.yaml`):
-
-- **Codex CLI**:
-  ```bash
-  CODEX_HOME=/var/lib/cli-gateway/homes/codex HOME=/var/lib/cli-gateway/homes/codex codex login
-  ```
-- **Antigravity CLI (`agy`)**:
-  ```bash
-  HOME=/var/lib/cli-gateway/homes/antigravity agy
-  # Complete Google OAuth login in the interactive session, then exit with /quit
-  ```
-- **Gemini CLI**:
-  ```bash
-  HOME=/var/lib/cli-gateway/homes/gemini gemini
-  # Follow the interactive Google authentication prompt and exit
-  ```
-- **Claude CLI**:
-  ```bash
-  HOME=/var/lib/cli-gateway/homes/claude claude auth login
-  # Or set CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY inside that executor's config env
-  ```
-- **Ollama**:
-  Ensure the Ollama daemon is running (`ollama serve`) and target models are pulled (`ollama pull qwen3`).
-
-> Always isolate each CLI's `home_dir` in production so one executor cannot access another executor's credentials.
-
-## Deployment
-
-### Variant A: systemd (Ubuntu Server)
-
-1. Build and install the binary:
-   ```bash
-   CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /usr/local/bin/cli-ai-gateway ./cmd/gateway
-   ```
-2. Create unprivileged system user and directories:
-   ```bash
-   sudo useradd --system --home-dir /var/lib/cli-gateway --create-home --shell /usr/sbin/nologin cli-gateway
-   sudo mkdir -p /etc/cli-ai-gateway /var/lib/cli-gateway/homes/{codex,antigravity,gemini,claude}
-   sudo cp config.yaml /etc/cli-ai-gateway/config.yaml
-   sudo chown -R cli-gateway:cli-gateway /var/lib/cli-gateway
-   sudo chmod 0640 /etc/cli-ai-gateway/config.yaml
-   ```
-3. Install and start the systemd service:
-   ```bash
-   sudo cp deployments/cli-ai-gateway.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now cli-ai-gateway
-   ```
-4. Place behind a TLS reverse proxy (Nginx / Caddy) for external HTTPS access; keep `server.listen` bound to `127.0.0.1:8080`.
-
-### Variant B: Docker Compose
-
-`Dockerfile` and `compose.yaml` configure an unprivileged container (`uid 10001`), read-only root filesystem, `cap_drop: [ALL]`, `no-new-privileges`, resource limits, and separate named volumes for gateway storage and each CLI's auth home:
+## Lifecycle & Local Go Development
 
 ```bash
-make docker-up
+make logs SERVICE=agy-1    # Follow logs of a specific container
+make restart SERVICE=agy-1 # Restart a single worker container
+make down                  # Stop containers (volumes with logins remain intact)
+
+# Local Go development / tests:
+make lint                  # go vet ./...
+make test                  # go test -race ./...
 ```
 
-If running interactive CLI login inside the container:
-
-```bash
-docker compose exec -it gateway env HOME=/var/lib/cli-gateway/homes/codex codex login
-```
-
-## Testing
-
-Run all unit, integration, security, and OpenAI Go SDK compatibility tests:
-
-```bash
-make test
-```
+Local non-Docker daemon targets (`make build`, `make local-start`, `make local-stop`, `make local-status`) remain available via [scripts/gateway.sh](scripts/gateway.sh) and [deployments/cli-ai-gateway.service](deployments/cli-ai-gateway.service).
 
 See [docs/openai-compatibility.md](docs/openai-compatibility.md) for the API compatibility matrix.

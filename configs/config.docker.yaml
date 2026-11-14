@@ -1,0 +1,100 @@
+server:
+  listen: "0.0.0.0:8080"
+  read_header_timeout_seconds: 15
+  shutdown_timeout_seconds: 30
+
+storage:
+  path: "/var/lib/cli-gateway"
+  max_file_bytes: 52428800        # 50 MiB
+  quota_bytes: 2147483648         # 2 GiB
+  file_ttl_seconds: 86400         # 24 hours
+  run_ttl_seconds: 604800         # 7 days
+  session_ttl_seconds: 2592000    # 30 days
+  cleanup_interval_seconds: 300
+  cleanup_run_input: true
+
+limits:
+  max_global_processes: 24
+  max_executor_processes: 4
+  max_user_processes: 4
+  max_queue_size: 32
+  queue_wait_timeout_seconds: 30
+  session_lock_timeout_seconds: 120
+  max_output_bytes: 16777216      # 16 MiB
+  max_files_per_task: 10
+  default_timeout_seconds: 600
+  max_timeout_seconds: 1800
+
+logging:
+  level: "info"
+  diagnostic: false
+
+admin:
+  enabled: true
+  # Overridden by GATEWAY_ADMIN_TOKEN from .env in compose.yaml
+  token: "gw-admin-change-me"
+  allow_without_auth: false
+
+auth:
+  keys:
+    - id: "key_dev_default"
+      owner_id: "user_default"
+      name: "Default API client"
+      # Overridden by GATEWAY_API_KEY from .env in compose.yaml
+      key: "gw-dev-change-me"
+      allowed_models: ["*"]
+      max_concurrent: 4
+      revoked: false
+
+models:
+  - id: codex
+    provider: codex
+    worker_url: http://codex:9090
+    timeout_seconds: 600
+    max_concurrent: 4
+    fs_access: workspace-read
+
+  - id: claude
+    provider: claude
+    worker_url: http://claude:9090
+    timeout_seconds: 600
+    max_concurrent: 4
+    fs_access: workspace-read
+
+  - id: gemini
+    provider: gemini
+    worker_url: http://gemini:9090
+    timeout_seconds: 600
+    max_concurrent: 4
+    fs_access: workspace-read
+
+  - id: agy-1
+    provider: antigravity
+    worker_url: http://agy-1:9090
+    timeout_seconds: 600
+    max_concurrent: 2
+    fs_access: workspace-read
+
+  - id: agy-2
+    provider: antigravity
+    worker_url: http://agy-2:9090
+    timeout_seconds: 600
+    max_concurrent: 2
+    fs_access: workspace-read
+
+  - id: agy-3
+    provider: antigravity
+    worker_url: http://agy-3:9090
+    timeout_seconds: 600
+    max_concurrent: 2
+    fs_access: workspace-read
+
+  # Remote Ollama server (set GATEWAY_OLLAMA_BASE_URL in .env to enable automatically,
+  # or configure/add additional Ollama endpoints directly in the Web Admin UI).
+  - id: remote-ollama
+    provider: ollama
+    base_url: http://10.0.0.50:11434
+    model: qwen3
+    timeout_seconds: 600
+    max_concurrent: 4
+    enabled: false

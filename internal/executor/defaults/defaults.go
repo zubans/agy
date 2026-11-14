@@ -1,6 +1,9 @@
 package defaults
 
 import (
+	"fmt"
+	"strings"
+
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
 	"cli-ai-gateway/internal/executor/antigravity"
@@ -9,23 +12,40 @@ import (
 	"cli-ai-gateway/internal/executor/gemini"
 	"cli-ai-gateway/internal/executor/ollama"
 	"cli-ai-gateway/internal/process"
+	"cli-ai-gateway/internal/worker"
 )
 
-// RegisterAll registers all built-in CLI and local engine adapters on registry.
+// RegisterAll registers all built-in CLI, Ollama, and remote-worker adapters on registry.
 func RegisterAll(registry *executor.Registry, procMgr *process.Manager) {
-	registry.RegisterFactory("codex", func(m config.ModelConfig) (executor.Executor, error) {
+	for _, provider := range []string{"codex", "antigravity", "gemini", "claude", "ollama"} {
+		p := provider
+		registry.RegisterFactory(p, func(m config.ModelConfig) (executor.Executor, error) {
+			local, err := NewLocalExecutor(m, procMgr)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(m.WorkerURL) != "" {
+				return worker.NewExecutor(m, local.Capabilities(), "")
+			}
+			return local, nil
+		})
+	}
+}
+
+// NewLocalExecutor builds the direct in-process Executor (CLI adapter or Ollama HTTP adapter) for m.Provider.
+func NewLocalExecutor(m config.ModelConfig, procMgr *process.Manager) (executor.Executor, error) {
+	switch m.Provider {
+	case "codex":
 		return codex.New(m, procMgr), nil
-	})
-	registry.RegisterFactory("antigravity", func(m config.ModelConfig) (executor.Executor, error) {
+	case "antigravity":
 		return antigravity.New(m, procMgr), nil
-	})
-	registry.RegisterFactory("gemini", func(m config.ModelConfig) (executor.Executor, error) {
+	case "gemini":
 		return gemini.New(m, procMgr), nil
-	})
-	registry.RegisterFactory("claude", func(m config.ModelConfig) (executor.Executor, error) {
+	case "claude":
 		return claude.New(m, procMgr), nil
-	})
-	registry.RegisterFactory("ollama", func(m config.ModelConfig) (executor.Executor, error) {
+	case "ollama":
 		return ollama.New(m), nil
-	})
+	default:
+		return nil, fmt.Errorf("unsupported provider %q", m.Provider)
+	}
 }

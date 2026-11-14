@@ -333,19 +333,21 @@ func (h *Handler) handleConfig(w http.ResponseWriter, _ *http.Request) {
 			envKeys = append(envKeys, k)
 		}
 		redactedModels = append(redactedModels, map[string]any{
-			"id":              m.Config.ID,
-			"provider":        m.Config.Provider,
-			"executable":      m.Config.Executable,
-			"base_url":        m.Config.BaseURL,
-			"model":           m.Config.Model,
-			"timeout_seconds": m.Config.TimeoutSeconds,
-			"sandbox_mode":    m.Config.SandboxMode,
-			"fs_access":       m.Config.FSAccess,
-			"allow_commands":  m.Config.AllowCommands,
-			"max_concurrent":  m.Config.MaxConcurrent,
-			"enabled":         m.Config.EffectiveEnabled(),
-			"dynamic":         m.Dynamic,
-			"env_keys":        envKeys,
+			"id":                      m.Config.ID,
+			"provider":                m.Config.Provider,
+			"executable":              m.Config.Executable,
+			"base_url":                m.Config.BaseURL,
+			"worker_url":              m.Config.WorkerURL,
+			"worker_token_configured": m.Config.WorkerToken != "",
+			"model":                   m.Config.Model,
+			"timeout_seconds":         m.Config.TimeoutSeconds,
+			"sandbox_mode":            m.Config.SandboxMode,
+			"fs_access":               m.Config.FSAccess,
+			"allow_commands":          m.Config.AllowCommands,
+			"max_concurrent":          m.Config.MaxConcurrent,
+			"enabled":                 m.Config.EffectiveEnabled(),
+			"dynamic":                 m.Dynamic,
+			"env_keys":                envKeys,
 		})
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]any{
@@ -370,6 +372,7 @@ type adminModelView struct {
 	Provider       string                `json:"provider"`
 	Executable     string                `json:"executable,omitempty"`
 	BaseURL        string                `json:"base_url,omitempty"`
+	WorkerURL      string                `json:"worker_url,omitempty"`
 	Model          string                `json:"model,omitempty"`
 	TimeoutSeconds int                   `json:"timeout_seconds"`
 	MaxConcurrent  int                   `json:"max_concurrent"`
@@ -382,27 +385,32 @@ type adminModelView struct {
 	Capabilities   executor.Capabilities `json:"capabilities"`
 }
 
+func toAdminModelView(info executor.ModelInfo, st executor.ExecutorStatus) adminModelView {
+	return adminModelView{
+		ID:             info.Config.ID,
+		Provider:       info.Config.Provider,
+		Executable:     info.Config.Executable,
+		BaseURL:        info.Config.BaseURL,
+		WorkerURL:      info.Config.WorkerURL,
+		Model:          info.Config.Model,
+		TimeoutSeconds: info.Config.TimeoutSeconds,
+		MaxConcurrent:  info.Config.MaxConcurrent,
+		SandboxMode:    info.Config.SandboxMode,
+		FSAccess:       info.Config.FSAccess,
+		Enabled:        info.Config.EffectiveEnabled(),
+		Dynamic:        info.Dynamic,
+		Ready:          st.Ready,
+		Error:          st.Error,
+		Capabilities:   info.Capabilities,
+	}
+}
+
 func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
 	items := h.deps.Registry.ListAll()
 	views := make([]adminModelView, 0, len(items))
 	for _, m := range items {
 		st, _ := h.deps.Registry.CheckOne(r.Context(), m.Config.ID)
-		views = append(views, adminModelView{
-			ID:             m.Config.ID,
-			Provider:       m.Config.Provider,
-			Executable:     m.Config.Executable,
-			BaseURL:        m.Config.BaseURL,
-			Model:          m.Config.Model,
-			TimeoutSeconds: m.Config.TimeoutSeconds,
-			MaxConcurrent:  m.Config.MaxConcurrent,
-			SandboxMode:    m.Config.SandboxMode,
-			FSAccess:       m.Config.FSAccess,
-			Enabled:        m.Config.EffectiveEnabled(),
-			Dynamic:        m.Dynamic,
-			Ready:          st.Ready,
-			Error:          st.Error,
-			Capabilities:   m.Capabilities,
-		})
+		views = append(views, toAdminModelView(m, st))
 	}
 	writeAdminJSON(w, http.StatusOK, map[string]any{"data": views})
 }
@@ -411,7 +419,9 @@ func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID             string `json:"id"`
 		Provider       string `json:"provider"`
+		Executable     string `json:"executable"`
 		BaseURL        string `json:"base_url"`
+		WorkerURL      string `json:"worker_url"`
 		Model          string `json:"model"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
 		MaxConcurrent  int    `json:"max_concurrent"`
@@ -421,14 +431,19 @@ func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON body")
 		return
 	}
-	if body.Provider != "" && body.Provider != "ollama" {
-		writeAdminError(w, http.StatusBadRequest, "invalid_provider", "Only dynamic 'ollama' models can be added via Web Admin for binary execution security")
+	if strings.TrimSpace(body.Executable) != "" {
+		writeAdminError(w, http.StatusBadRequest, "forbidden_field", "Local binary executable cannot be registered via Web Admin; use worker_url")
 		return
 	}
-	info, err := h.deps.Registry.AddDynamicOllamaModel(r.Context(), h.deps.DB.SQL(), config.ModelConfig{
+	provider := strings.TrimSpace(body.Provider)
+	if provider == "" {
+		provider = "ollama"
+	}
+	info, err := h.deps.Registry.AddDynamicModel(r.Context(), h.deps.DB.SQL(), config.ModelConfig{
 		ID:             body.ID,
-		Provider:       "ollama",
+		Provider:       provider,
 		BaseURL:        body.BaseURL,
+		WorkerURL:      body.WorkerURL,
 		Model:          body.Model,
 		TimeoutSeconds: body.TimeoutSeconds,
 		MaxConcurrent:  body.MaxConcurrent,
@@ -443,20 +458,7 @@ func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, _ := h.deps.Registry.CheckOne(r.Context(), info.Config.ID)
-	writeAdminJSON(w, http.StatusCreated, adminModelView{
-		ID:             info.Config.ID,
-		Provider:       info.Config.Provider,
-		BaseURL:        info.Config.BaseURL,
-		Model:          info.Config.Model,
-		TimeoutSeconds: info.Config.TimeoutSeconds,
-		MaxConcurrent:  info.Config.MaxConcurrent,
-		FSAccess:       info.Config.FSAccess,
-		Enabled:        info.Config.EffectiveEnabled(),
-		Dynamic:        info.Dynamic,
-		Ready:          st.Ready,
-		Error:          st.Error,
-		Capabilities:   info.Capabilities,
-	})
+	writeAdminJSON(w, http.StatusCreated, toAdminModelView(info, st))
 }
 
 func (h *Handler) handleCheckAllModels(w http.ResponseWriter, r *http.Request) {
@@ -532,6 +534,14 @@ func (h *Handler) handlePatchModel(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.BaseURL = &s
 	}
+	if v, ok := raw["worker_url"]; ok {
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			writeAdminError(w, http.StatusBadRequest, "invalid_field", "worker_url must be string")
+			return
+		}
+		patch.WorkerURL = &s
+	}
 
 	info, err := h.deps.Registry.UpdateRuntimeModel(r.Context(), h.deps.DB.SQL(), modelID, patch)
 	if err != nil {
@@ -543,22 +553,7 @@ func (h *Handler) handlePatchModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, _ := h.deps.Registry.CheckOne(r.Context(), info.Config.ID)
-	writeAdminJSON(w, http.StatusOK, adminModelView{
-		ID:             info.Config.ID,
-		Provider:       info.Config.Provider,
-		Executable:     info.Config.Executable,
-		BaseURL:        info.Config.BaseURL,
-		Model:          info.Config.Model,
-		TimeoutSeconds: info.Config.TimeoutSeconds,
-		MaxConcurrent:  info.Config.MaxConcurrent,
-		SandboxMode:    info.Config.SandboxMode,
-		FSAccess:       info.Config.FSAccess,
-		Enabled:        info.Config.EffectiveEnabled(),
-		Dynamic:        info.Dynamic,
-		Ready:          st.Ready,
-		Error:          st.Error,
-		Capabilities:   info.Capabilities,
-	})
+	writeAdminJSON(w, http.StatusOK, toAdminModelView(info, st))
 }
 
 func (h *Handler) handleDeleteModel(w http.ResponseWriter, r *http.Request) {

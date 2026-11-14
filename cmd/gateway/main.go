@@ -21,17 +21,23 @@ import (
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
+	"cli-ai-gateway/internal/worker"
 )
 
 func main() {
 	var configPath string
 	var doHealthcheck bool
+	var workerMode bool
 	flag.StringVar(&configPath, "config", os.Getenv("GATEWAY_CONFIG"), "Path to YAML configuration file")
 	flag.BoolVar(&doHealthcheck, "healthcheck", false, "Probe local /health endpoint and exit")
+	flag.BoolVar(&workerMode, "worker", strings.EqualFold(os.Getenv("GATEWAY_MODE"), "worker"), "Run isolated single-CLI worker HTTP agent")
 	flag.Parse()
 
 	if doHealthcheck {
 		os.Exit(runHealthcheck(configPath))
+	}
+	if workerMode {
+		os.Exit(runWorker())
 	}
 
 	if configPath == "" {
@@ -214,7 +220,15 @@ func runHealthcheck(configPath string) int {
 		target = "http://" + listenAddr + "/health"
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(target)
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck request error: %v\n", err)
+		return 1
+	}
+	if tok := strings.TrimSpace(os.Getenv("GATEWAY_WORKER_TOKEN")); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "healthcheck error: %v\n", err)
 		return 1
@@ -222,6 +236,94 @@ func runHealthcheck(configPath string) int {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "healthcheck status: %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
+}
+
+func runWorker() int {
+	logger := newJSONLogger(os.Getenv("GATEWAY_LOG_LEVEL"))
+	provider := strings.TrimSpace(os.Getenv("GATEWAY_WORKER_PROVIDER"))
+	if provider == "" {
+		logger.Error("GATEWAY_WORKER_PROVIDER is required in worker mode")
+		return 1
+	}
+
+	executable := strings.TrimSpace(os.Getenv("GATEWAY_WORKER_EXECUTABLE"))
+	if executable == "" {
+		switch provider {
+		case "antigravity":
+			executable = "agy"
+		default:
+			executable = provider
+		}
+	}
+
+	homeDir := strings.TrimSpace(os.Getenv("GATEWAY_WORKER_HOME"))
+	if homeDir == "" {
+		homeDir = os.Getenv("HOME")
+	}
+
+	fsAccess := strings.TrimSpace(os.Getenv("GATEWAY_WORKER_FS_ACCESS"))
+	if fsAccess == "" {
+		fsAccess = "workspace-read"
+	}
+
+	var allowedTools []string
+	if raw := strings.TrimSpace(os.Getenv("GATEWAY_WORKER_ALLOWED_TOOLS")); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			if t := strings.TrimSpace(part); t != "" {
+				allowedTools = append(allowedTools, t)
+			}
+		}
+	}
+
+	allowCommands := strings.EqualFold(os.Getenv("GATEWAY_WORKER_ALLOW_COMMANDS"), "true") || os.Getenv("GATEWAY_WORKER_ALLOW_COMMANDS") == "1"
+
+	procMgr := process.NewManager(process.Limits{
+		MaxGlobal:        16,
+		MaxPerExecutor:   8,
+		MaxPerUser:       8,
+		MaxQueueSize:     32,
+		QueueWaitTimeout: 30 * time.Second,
+		DefaultMaxOutput: 16 * 1024 * 1024,
+	})
+
+	modelCfg := config.ModelConfig{
+		ID:            provider,
+		Provider:      provider,
+		Executable:    executable,
+		HomeDir:       homeDir,
+		SandboxMode:   strings.TrimSpace(os.Getenv("GATEWAY_WORKER_SANDBOX_MODE")),
+		AllowedTools:  allowedTools,
+		AllowCommands: allowCommands,
+		FSAccess:      fsAccess,
+	}
+
+	exec, err := defaults.NewLocalExecutor(modelCfg, procMgr)
+	if err != nil {
+		logger.Error("worker executor initialization failed", "error", err)
+		return 1
+	}
+
+	srv, err := worker.NewServer(worker.ServerConfig{
+		Listen:     os.Getenv("GATEWAY_WORKER_LISTEN"),
+		Token:      os.Getenv("GATEWAY_WORKER_TOKEN"),
+		Provider:   provider,
+		Executable: executable,
+		Executor:   exec,
+		Logger:     logger,
+	})
+	if err != nil {
+		logger.Error("worker server initialization failed", "error", err)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := srv.Run(ctx); err != nil {
+		logger.Error("worker server failed", "error", err)
 		return 1
 	}
 	return 0

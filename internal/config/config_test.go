@@ -307,3 +307,93 @@ models:
 		}
 	})
 }
+
+func TestWorkerURLAndEnvOverrides(t *testing.T) {
+	yamlCfg := `
+admin:
+  enabled: true
+  token: yaml-admin
+auth:
+  keys:
+    - id: k1
+      owner_id: u1
+      key: yaml-api-key
+models:
+  - id: agy-1
+    provider: antigravity
+    worker_url: http://agy-1:9090
+  - id: remote-ollama
+    provider: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen3
+    enabled: false
+`
+	t.Setenv("GATEWAY_WORKER_TOKEN", "worker-secret-1")
+	t.Setenv("GATEWAY_API_KEY", "env-api-key")
+	t.Setenv("GATEWAY_OLLAMA_BASE_URL", "http://10.0.0.50:11434")
+	t.Setenv("GATEWAY_OLLAMA_MODEL", "llama3.3")
+
+	cfg, err := config.Parse([]byte(yamlCfg))
+	if err != nil {
+		t.Fatalf("Parse failed with worker_url config: %v", err)
+	}
+	if cfg.Models[0].WorkerToken != "worker-secret-1" {
+		t.Fatalf("expected GATEWAY_WORKER_TOKEN applied to worker model, got %q", cfg.Models[0].WorkerToken)
+	}
+	if cfg.Auth.Keys[0].EffectiveHash() != shaHex("env-api-key") {
+		t.Fatalf("expected GATEWAY_API_KEY override to update default key hash")
+	}
+	if cfg.Models[1].BaseURL != "http://10.0.0.50:11434" || cfg.Models[1].Model != "llama3.3" || !cfg.Models[1].EffectiveEnabled() {
+		t.Fatalf("expected GATEWAY_OLLAMA_BASE_URL/MODEL to enable & update ollama, got %+v", cfg.Models[1])
+	}
+
+	t.Run("invalid worker_url rejected", func(t *testing.T) {
+		bad := `
+models:
+  - id: agy-bad
+    provider: antigravity
+    worker_url: ftp://agy-1:9090
+`
+		if _, err := config.Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "invalid worker_url") {
+			t.Fatalf("expected invalid worker_url error, got %v", err)
+		}
+	})
+
+	t.Run("missing both executable and worker_url rejected", func(t *testing.T) {
+		bad := `
+models:
+  - id: claude-missing
+    provider: claude
+`
+		if _, err := config.Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "executable is required (unless worker_url is set)") {
+			t.Fatalf("expected executable is required error, got %v", err)
+		}
+	})
+}
+
+func TestConfigDockerYAMLValid(t *testing.T) {
+	t.Setenv("GATEWAY_WORKER_TOKEN", "test-docker-worker-token")
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "config.docker.yaml"))
+	if err != nil {
+		t.Fatalf("configs/config.docker.yaml failed to load/validate: %v", err)
+	}
+	wantIDs := []string{"codex", "claude", "gemini", "agy-1", "agy-2", "agy-3", "remote-ollama"}
+	if len(cfg.Models) != len(wantIDs) {
+		t.Fatalf("expected %d models in config.docker.yaml, got %d", len(wantIDs), len(cfg.Models))
+	}
+	for _, id := range wantIDs {
+		m, ok := cfg.ModelByID(id)
+		if !ok {
+			t.Fatalf("missing model %q in config.docker.yaml", id)
+		}
+		if id == "remote-ollama" {
+			if m.EffectiveEnabled() {
+				t.Fatalf("expected remote-ollama disabled by default when GATEWAY_OLLAMA_BASE_URL is unset")
+			}
+			continue
+		}
+		if !strings.HasPrefix(m.WorkerURL, "http://"+id+":9090") || m.WorkerToken != "test-docker-worker-token" {
+			t.Fatalf("unexpected worker config for %q: %+v", id, m)
+		}
+	}
+}

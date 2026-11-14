@@ -100,6 +100,8 @@ type ModelConfig struct {
 	Provider       string            `yaml:"provider"`
 	Executable     string            `yaml:"executable"`
 	BaseURL        string            `yaml:"base_url"`
+	WorkerURL      string            `yaml:"worker_url"`
+	WorkerToken    string            `yaml:"worker_token"`
 	Model          string            `yaml:"model"`
 	TimeoutSeconds int               `yaml:"timeout_seconds"`
 	HomeDir        string            `yaml:"home_dir"`
@@ -287,6 +289,33 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Admin.Enabled = false
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("GATEWAY_API_KEY")); v != "" && len(cfg.Auth.Keys) > 0 {
+		cfg.Auth.Keys[0].Key = v
+		cfg.Auth.Keys[0].KeySHA256 = ""
+	}
+	if v := strings.TrimSpace(os.Getenv("GATEWAY_WORKER_TOKEN")); v != "" {
+		for i := range cfg.Models {
+			if strings.TrimSpace(cfg.Models[i].WorkerURL) != "" && strings.TrimSpace(cfg.Models[i].WorkerToken) == "" {
+				cfg.Models[i].WorkerToken = v
+			}
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("GATEWAY_OLLAMA_BASE_URL")); v != "" {
+		en := true
+		for i := range cfg.Models {
+			if cfg.Models[i].Provider == "ollama" {
+				cfg.Models[i].BaseURL = v
+				cfg.Models[i].Enabled = &en
+			}
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("GATEWAY_OLLAMA_MODEL")); v != "" {
+		for i := range cfg.Models {
+			if cfg.Models[i].Provider == "ollama" {
+				cfg.Models[i].Model = v
+			}
+		}
+	}
 }
 
 // Validate enforces structural and security invariants at startup (Section 10).
@@ -378,8 +407,15 @@ func (c *Config) Validate() error {
 		}
 		switch m.Provider {
 		case "codex", "antigravity", "gemini", "claude", "mock":
-			if strings.TrimSpace(m.Executable) == "" {
-				errs = append(errs, fmt.Errorf("models[%d] (%s): executable is required", i, m.ID))
+			hasWorker := strings.TrimSpace(m.WorkerURL) != ""
+			hasExec := strings.TrimSpace(m.Executable) != ""
+			if !hasWorker && !hasExec {
+				errs = append(errs, fmt.Errorf("models[%d] (%s): executable is required (unless worker_url is set)", i, m.ID))
+			}
+			if hasWorker {
+				if u, err := url.Parse(strings.TrimSpace(m.WorkerURL)); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					errs = append(errs, fmt.Errorf("models[%d] (%s): invalid worker_url %q", i, m.ID, m.WorkerURL))
+				}
 			}
 		case "ollama":
 			if strings.TrimSpace(m.BaseURL) == "" {
@@ -389,6 +425,11 @@ func (c *Config) Validate() error {
 			}
 			if strings.TrimSpace(m.Model) == "" {
 				errs = append(errs, fmt.Errorf("models[%d] (%s): model is required for ollama", i, m.ID))
+			}
+			if strings.TrimSpace(m.WorkerURL) != "" {
+				if u, err := url.Parse(strings.TrimSpace(m.WorkerURL)); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					errs = append(errs, fmt.Errorf("models[%d] (%s): invalid worker_url %q", i, m.ID, m.WorkerURL))
+				}
 			}
 		default:
 			errs = append(errs, fmt.Errorf("models[%d] (%s): unsupported provider %q", i, m.ID, m.Provider))
