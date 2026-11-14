@@ -1,103 +1,139 @@
-# CLI AI Gateway — Руководство по развёртыванию (Docker с нуля), эксплуатации и Web-админке
+# CLI AI Gateway — Развёртывание в Docker с нуля, пул воркеров (`N` агентов) и Web-админка
 
-Практическая инструкция по развёртыванию **CLI AI Gateway** на чистом сервере (Ubuntu / Linux / macOS) в изолированных Docker-контейнерах, авторизации каждого CLI-клиента, подключению удалённого сервера Ollama, рестарту/остановке и управлению через Web-админку (`/admin/`).
+Практическая инструкция по развёртыванию **CLI AI Gateway** на чистом сервере (Ubuntu / Linux / macOS) с произвольным числом изолированных контейнеров под каждого CLI-агента (`claude-*`, `codex-*`, `gemini-*`, `agy-*`), подключению удалённого Ollama, авторизации и управлению через Web-админку (`/admin/`).
 
 ---
 
-## 1. Архитектура: контейнер на каждый агент
+## 1. Архитектура: контейнер на каждый аккаунт / модель
 
-Все консольные CLI-клиенты устанавливаются **строго внутри Docker-образов** (на хосте не нужно ставить Node.js, Go, Claude, Codex, Gemini или Antigravity):
+Ни один CLI-клиент не ставится на хост. Для **каждого экземпляра** любого агента поднимается свой Docker-контейнер и свой persistent volume:
 
 ```text
 Client -> POST /v1/responses -> gateway (8080, бинарников CLI нет)
-                                  |-- http://codex:9090  -> codex (Codex CLI + volume codex_home)
-                                  |-- http://claude:9090 -> claude (Claude CLI + volume claude_home)
-                                  |-- http://gemini:9090 -> gemini (Gemini CLI + volume gemini_home)
-                                  |-- http://agy-1:9090  -> agy-1 (Antigravity CLI + volume agy_1_home)
-                                  |-- http://agy-2:9090  -> agy-2 (Antigravity CLI + volume agy_2_home)
-                                  |-- http://agy-3:9090  -> agy-3 (Antigravity CLI + volume agy_3_home)
-                                  `-- http://<ip>:11434  -> удалённый Ollama-сервер
+                                  |-- http://claude-1:9090 -> claude-1 (claude + volume claude_1_home)
+                                  |-- http://claude-2:9090 -> claude-2 (claude + volume claude_2_home)
+                                  |-- http://codex-1:9090  -> codex-1  (codex  + volume codex_1_home)
+                                  |-- http://codex-2:9090  -> codex-2  (codex  + volume codex_2_home)
+                                  |-- http://agy-1:9090    -> agy-1    (agy    + volume agy_1_home)
+                                  |-- ... (любое число agy-N / codex-N / claude-N / gemini-N)
+                                  `-- http://<ip>:11434    -> удалённый Ollama-сервер
 ```
 
-Ключевые принципы безопасности и изоляции:
-- **`docker.sock` не пробрасывается**: `gateway` общается с воркерами по внутреннему HTTP-протоколу (`-worker` на порту `9090`) с Bearer-токеном `GATEWAY_WORKER_TOKEN`.
-- **Отдельный контейнер и volume на каждый аккаунт**: `agy-1`, `agy-2`, `agy-3` — три отдельных контейнера на базе образа `worker-agy`, каждый со своим volume (`agy_1_home`, `agy_2_home`, `agy_3_home`), чтобы сессии и OAuth-токены никогда не пересекались.
-- **Read-only rootfs**: все контейнеры работают от непривилегированного UID `10001`, с `cap_drop: [ALL]` и `no-new-privileges:true`.
-- **Передача файлов и отмена задач**: `gateway` стримит `prompt.md`, `context.md` и вложения в воркер по `POST /worker/execute`; при обрыве соединения, таймауте или отмене в админке воркер прибивает всю группу процессов (`PGID`) и удаляет временную рабочую директорию.
+Как это работает под капотом:
+- **`docker.sock` не монтируется**: `gateway` общается с воркерами по HTTP (`-worker` на `:9090`, токен `GATEWAY_WORKER_TOKEN`, пакет `internal/worker`).
+- **Нет жёсткого лимита на количество контейнеров**: скрипт [scripts/workers.sh](../scripts/workers.sh) хранит список контейнеров в `.workers` и генерирует `compose.workers.yaml` и `workers.models.yaml` (читается шлюзом через `GATEWAY_WORKERS_CONFIG`, поверх [configs/config.docker.yaml](../configs/config.docker.yaml)).
+- **Изоляция и безопасность**: read-only rootfs, `uid 10001`, `cap_drop: [ALL]`, `no-new-privileges:true`, отдельный volume под `HOME` каждого контейнера.
 
 ---
 
 ## 2. Развёртывание на чистом Ubuntu-сервере с нуля
 
-### Шаг 1. Установка базовых пакетов на хост
-
-Нужны только Docker Engine с Compose-плагином, `git` и `make`:
+### Шаг 1. Базовые пакеты на хост
 
 ```bash
 sudo apt-get update && sudo apt-get install -y ca-certificates curl git make
-# Если Docker ещё не установлен — официальный скрипт Docker:
 curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker "$USER"
 # Перезайдите в SSH-сессию, чтобы применилась группа docker
 ```
 
-### Шаг 2. Клонирование и генерация `.env`
+### Шаг 2. Инициализация `.env` и стартового пула контейнеров
 
 ```bash
 git clone <URL-репозитория> agy && cd agy
+
+# Вариант A: стандартный набор (1 claude, 1 codex, 1 gemini, 3 agy):
 make init
+
+# Вариант B: сразу задать нужное количество каждого CLI (например 2 клода, 3 кодекса, 6 аги):
+make init CLAUDE_COUNT=2 CODEX_COUNT=3 GEMINI_COUNT=1 AGY_COUNT=6
 ```
 
-Команда `make init` создаст `.env` (из `.env.example`, файл в `.gitignore`) и автоматически сгенерирует случайные токены:
-- `GATEWAY_API_KEY` — клиентский ключ для OpenAI API (`/v1/*`);
-- `GATEWAY_ADMIN_TOKEN` — пароль для Web-админки (`/admin/`);
-- `GATEWAY_WORKER_TOKEN` — внутренний токен между `gateway` и воркерами (`:9090`).
+`make init` создаёт:
+- `.env` со сгенерированными случайными секретами (`GATEWAY_API_KEY`, `GATEWAY_ADMIN_TOKEN`, `GATEWAY_WORKER_TOKEN`) и `COMPOSE_FILE=compose.yaml:compose.workers.yaml`;
+- `.workers`, `compose.workers.yaml` и `workers.models.yaml` (все 4 файла в `.gitignore`, не загрязняют репозиторий).
 
-Базовая Docker-конфигурация моделей находится в [configs/config.docker.yaml](../configs/config.docker.yaml).
+### Шаг 3. Удалённый сервер Ollama (опционально)
 
-### Шаг 3. Подключение удалённого Ollama (если используется)
-
-Если Ollama крутится на другом сервере (например `10.0.0.50`):
-1. На сервере с Ollama убедитесь, что демон слушает внешний/локальный интерфейс (`OLLAMA_HOST=0.0.0.0:11434`) и порт `11434` открыт для Docker-сервера с gateway.
-2. Пропишите адрес и модель в `.env`:
+Если Ollama запущен на другом сервере (например `10.0.0.50`):
+1. На сервере с Ollama разрешите внешние подключения (`OLLAMA_HOST=0.0.0.0:11434`, порт `11434`).
+2. Добавьте в `.env`:
    ```env
    GATEWAY_OLLAMA_BASE_URL=http://10.0.0.50:11434
    GATEWAY_OLLAMA_MODEL=qwen3
    ```
-   При наличии `GATEWAY_OLLAMA_BASE_URL` модель `remote-ollama` активируется автоматически. Дополнительные модели/адреса Ollama можно добавлять прямо в Web-админке без перезапуска.
+   При наличии `GATEWAY_OLLAMA_BASE_URL` модель `remote-ollama` включается автоматически. Несколько разных серверов/моделей Ollama можно добавить в любой момент через Web-админку (`/admin/` -> `+ Добавить модель`).
 
-### Шаг 4. Сборка и запуск стека
+### Шаг 4. Сборка и запуск
 
 ```bash
 make up
 make ps
+make agent-ls
 ```
-
-Команда `make up` соберёт образы (`gateway`, `worker-codex`, `worker-claude`, `worker-gemini`, `worker-agy`) и запустит все 7 контейнеров (`gateway`, `codex`, `claude`, `gemini`, `agy-1`, `agy-2`, `agy-3`).
 
 ---
 
-## 3. Авторизация консольных агентов в контейнерах (`make *-login`)
+## 3. Масштабирование: добавить или удалить контейнеры (`make agent-add` / `agent-rm`)
 
-Каждая команда запускает интерактивный вход строго внутри своего контейнера и сохраняет авторизацию в его персональный Docker volume:
+Добавить новые контейнеры можно в любой момент без правки YAML руками:
 
 ```bash
-# Claude Code CLI (контейнер claude)
-make claude-login
+# Авто-нумерация следующего свободного слота:
+make agent-add TYPE=agy                   # создаст agy-4 (затем agy-5, agy-6...)
+make agent-add TYPE=agy COUNT=3           # создаст сразу 3 новых agy-контейнера
+make agent-add TYPE=codex                 # создаст codex-2 (затем codex-3...)
+make agent-add TYPE=claude                # создаст claude-2 (затем claude-3...)
+make agent-add TYPE=gemini COUNT=2        # создаст gemini-2, gemini-3
 
-# Codex CLI (контейнер codex, device-auth для headless-сервера без браузера)
-make codex-login
-
-# Gemini CLI (контейнер gemini, без открытия локального браузера)
-make gemini-login
-
-# Antigravity CLI — 3 независимых контейнера/аккаунта:
-make agy-1-login   # либо: make agy-login ACCOUNT=1
-make agy-2-login   # либо: make agy-login ACCOUNT=2
-make agy-3-login   # либо: make agy-login ACCOUNT=3
+# Произвольное имя или номер слота:
+make agent-add TYPE=claude NAME=claude-work
+make agent-add TYPE=codex SLOT=10         # создаст codex-10
 ```
 
-После входа проверьте готовность всех исполнителей:
+Что делает `make agent-add`:
+1. Добавляет строки в `.workers`, пересобирает `compose.workers.yaml` и `workers.models.yaml`.
+2. Поднимает новые контейнеры через `docker compose up -d --build`.
+3. Если `gateway` уже запущен — регистрирует новые модели сразу через `/admin/api/models` **без рестарта `gateway`**.
+
+Удаление контейнера:
+
+```bash
+make agent-rm NAME=agy-5                  # удалит контейнер, volume agy_5_home сохранит
+make agent-rm NAME=agy-5 PURGE_VOLUME=1   # удалит контейнер вместе с auth-томом
+```
+
+---
+
+## 4. Авторизация агентов в контейнерах (`make *-login`)
+
+Для каждого клиента есть единая `make`-команда с параметром `ACCOUNT=1|2|...` (по умолчанию `1`) или явным именем `NAME=...`:
+
+```bash
+# Claude Code CLI:
+make claude-login                  # вход в claude-1
+make claude-login ACCOUNT=2        # вход в claude-2
+make claude-login NAME=claude-work # вход в произвольный контейнер claude-work
+
+# Codex CLI (device auth без браузера):
+make codex-login                   # вход в codex-1
+make codex-login ACCOUNT=2         # вход в codex-2
+make codex-login ACCOUNT=3         # вход в codex-3
+
+# Gemini CLI:
+make gemini-login                  # вход в gemini-1
+make gemini-login ACCOUNT=2        # вход в gemini-2
+
+# Antigravity CLI (agy):
+make agy-login ACCOUNT=1           # вход в agy-1
+make agy-login ACCOUNT=4           # вход в agy-4
+make agy-login ACCOUNT=5           # вход в agy-5
+
+# Универсальная команда для любого контейнера:
+make agent-login NAME=codex-2
+```
+
+Проверка готовности всех контейнеров:
 
 ```bash
 curl -s http://127.0.0.1:8080/ready
@@ -105,131 +141,54 @@ curl -s http://127.0.0.1:8080/ready
 
 ---
 
-## 4. Повседневное управление (старт, статус, логи, рестарт, остановка)
+## 5. Повседневное управление, логи и рестарт
 
 ```bash
-# Посмотреть статус и healthcheck всех 7 контейнеров
-make ps
-
-# Логи (по умолчанию gateway; можно выбрать любой контейнер)
-make logs
-make logs SERVICE=claude
-make logs SERVICE=agy-2
-
-# Перезапуск одного воркера или всего стека
-make restart SERVICE=agy-1
-make restart SERVICE=gateway
-docker compose restart
-
-# Остановка (named volumes с авторизацией CLI и gateway.db сохраняются)
-make down
-
-# Повторный запуск после остановки / обновления кода
-make up
+make agent-ls                # таблица всех worker-контейнеров, worker_url и volume
+make ps                      # статус Docker-контейнеров и healthcheck
+make logs                    # логи gateway
+make logs SERVICE=codex-2    # логи конкретного контейнера
+make restart SERVICE=agy-4   # перезапуск одного воркера
+make down                    # остановка (авторизации в volumes сохраняются)
+make up                      # повторный запуск / обновление
 ```
-
-### Добавление ещё одного контейнера Antigravity (например `agy-4`)
-
-1. В [compose.yaml](../compose.yaml) добавьте сервис `agy-4` (копией блока `agy-3`) и volume `agy_4_home`.
-2. Поднимите новый контейнер и авторизуйте его:
-   ```bash
-   docker compose up -d agy-4
-   make agy-login ACCOUNT=4
-   ```
-3. Добавьте модель `agy-4` (`provider: antigravity`, `worker_url: http://agy-4:9090`) в [configs/config.docker.yaml](../configs/config.docker.yaml) или прямо в Web-админке (`/admin/` -> `+ Добавить модель`).
 
 ---
 
-## 5. Переменные окружения
+## 6. Переменные окружения
 
 | Переменная | Назначение |
 | --- | --- |
-| `GATEWAY_BIND_HOST` | Host IP публикации порта gateway (по умолчанию `127.0.0.1`) |
-| `GATEWAY_PORT` | Порт на хосте (по умолчанию `8080`) |
-| `GATEWAY_API_KEY` | Переопределяет первый API-ключ из `auth.keys` для `/v1/*` |
+| `COMPOSE_FILE` | В `.env`: `compose.yaml:compose.workers.yaml` |
+| `CLAUDE_COUNT` / `CODEX_COUNT` / `GEMINI_COUNT` / `AGY_COUNT` | Стартовое число контейнеров при `make init` (по умолчанию `1/1/1/3`) |
+| `GATEWAY_BIND_HOST` / `GATEWAY_PORT` | Host IP и порт публикации `gateway` (по умолчанию `127.0.0.1:8080`) |
+| `GATEWAY_API_KEY` | Переопределяет клиентский Bearer-ключ для `/v1/*` |
 | `GATEWAY_ADMIN_TOKEN` | Токен входа в Web-админку `/admin/` |
-| `GATEWAY_WORKER_TOKEN` | Общий Bearer-токен между `gateway` и worker-контейнерами (`:9090`) |
-| `GATEWAY_OLLAMA_BASE_URL` | Адрес удалённого Ollama (включает `remote-ollama` автоматически) |
-| `GATEWAY_OLLAMA_MODEL` | Имя модели по умолчанию на удалённом Ollama |
+| `GATEWAY_WORKER_TOKEN` | Общий Bearer-токен между `gateway` и всеми воркерами (`:9090`) |
+| `GATEWAY_OLLAMA_BASE_URL` / `GATEWAY_OLLAMA_MODEL` | Адрес и модель удалённого Ollama (включает `remote-ollama` автоматически) |
+| `GATEWAY_WORKERS_CONFIG` | Автоматически задаётся `compose.workers.yaml` (`/etc/cli-ai-gateway/workers.yaml`) |
 | `GATEWAY_LOG_LEVEL` | `debug`, `info`, `warn`, `error` |
-| `GATEWAY_CONFIG` | Путь к YAML-конфигу (в Docker: `/etc/cli-ai-gateway/config.yaml`) |
-| `GATEWAY_STORAGE_PATH` | Каталог SQLite и временных файлов (в Docker: `/var/lib/cli-gateway`) |
 
 ---
 
-## 6. Работа с API и Go-клиентом
+## 7. Встроенная Web-админка (`/admin/`) и API
 
-Узнать сгенерированный ключ и проверить вызов можно прямо из `.env`:
+Откройте `http://127.0.0.1:8080/admin/` (либо через SSH-туннель `ssh -L 8080:127.0.0.1:8080 user@server`) и войдите по `GATEWAY_ADMIN_TOKEN` из `.env`:
+- **Модели, воркеры и Ollama**: просмотр статуса готовности каждого `claude-*`, `codex-*`, `gemini-*`, `agy-*` и `remote-ollama`, отключение/включение, настройка `timeout_seconds`, `max_concurrent`, `worker_url` / `base_url`, динамическое добавление удалённых Ollama и внешних воркеров (`model_overrides` в SQLite).
+- **Запуски, сессии, файлы, API-ключи и песочница SSE**: отмена зависших запусков (завершает `PGID` процесса внутри воркера), управление клиентскими ключами, проверка потокового ответа в Playground.
+
+Пример вызова конкретного воркера через `/v1/responses`:
 
 ```bash
 set -a && . ./.env && set +a
-
-# 1. Список моделей
-curl -s http://127.0.0.1:${GATEWAY_PORT:-8080}/v1/models \
-  -H "Authorization: Bearer $GATEWAY_API_KEY"
-
-# 2. Запрос к контейнеру agy-1 или claude
 curl -s http://127.0.0.1:${GATEWAY_PORT:-8080}/v1/responses \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"agy-1","input":"Проверь работу воркера"}'
-
-# 3. Загрузка файла и передача через file_ids
-curl -s -F purpose=user_data -F file=@README.md \
-  http://127.0.0.1:${GATEWAY_PORT:-8080}/v1/files \
-  -H "Authorization: Bearer $GATEWAY_API_KEY"
+  -d '{"model":"codex-2","input":"Проверь контейнер codex-2"}'
 ```
-
----
-
-## 7. Встроенная Web-админка (`/admin/`)
-
-Откройте `http://127.0.0.1:8080/admin/` (либо через SSH-туннель `ssh -L 8080:127.0.0.1:8080 user@server`) и войдите по `GATEWAY_ADMIN_TOKEN` из `.env`.
-
-- **Безопасность**: клиентские `/v1/*` ключи не пускают в `/admin/*`; сессия хранится в `HttpOnly; SameSite=Strict` cookie с проверкой CSRF (`X-Admin-UI: 1`).
-- **Модели, воркеры и Ollama**:
-  - Просмотр статуса готовности (`ready / unavailable`) каждого контейнера-воркера и удалённого Ollama, ручная перепроверка (`Проверить`).
-  - Включение/отключение, настройка `timeout_seconds`, `max_concurrent`, `model` и `worker_url` / `base_url` (сохраняется в SQLite `model_overrides`).
-  - Динамическое добавление удалённых **Ollama** (`base_url`) и дополнительных **Worker-контейнеров** (`worker_url`, например `http://agy-4:9090`); регистрация локальных путей `executable` из UI по-прежнему заблокирована.
-- **Запуски, сессии, файлы, API-ключи и песочница SSE**: управление запусками (включая принудительную отмену `POST /admin/api/runs/{id}/cancel`), просмотр `history.jsonl` / `files`, выпуск и отзыв клиентских ключей, интерактивная SSE-песочница.
 
 ---
 
 ## 8. Локальный запуск бинарника (для разработки)
 
-Если вы разрабатываете код локально с установленным Go без Docker, используйте локальные цели `Makefile` и [scripts/gateway.sh](../scripts/gateway.sh):
-
-```bash
-make build
-make local-start
-make local-status
-make local-logs
-make local-restart
-make local-stop
-```
-
-Для запуска вне Docker как systemd-демона на Linux см. [deployments/cli-ai-gateway.service](../deployments/cli-ai-gateway.service).
-
----
-
-## 9. Резервное копирование и диагностика неполадок
-
-### Бэкап SQLite (внутри Docker volume `gateway_data`)
-
-```bash
-docker compose exec -T gateway cli-ai-gateway -healthcheck
-# Для онлайн-копии gateway.db из volume используйте контейнер/скрипт с sqlite3 `.backup`
-```
-
-### Типичные проблемы
-
-- **Воркер помечен `unavailable` / ошибка `worker auth failed` (401)**:
-  Проверьте, что `GATEWAY_WORKER_TOKEN` в `.env` одинаков для `gateway` и воркеров (после изменения `.env` выполните `make up`, чтобы контейнеры пересоздались с новым токеном).
-- **`worker unreachable at http://agy-1:9090`**:
-  Проверьте `make ps` и `make logs SERVICE=agy-1`.
-- **CLI требует авторизацию во время выполнения**:
-  Выполните соответствующую команду `make *-login` (`make claude-login`, `make codex-login`, `make gemini-login`, `make agy-1-login` и т.д.).
-- **Удалённый Ollama возвращает `connection refused`**:
-  Проверьте, что на удалённой машине задано `OLLAMA_HOST=0.0.0.0:11434` и файервол пропускает порт `11434`.
-- **429 `queue_limit_exceeded`**:
-  Превышены `limits.max_global_processes`, `max_concurrent` модели или ключа — увеличьте лимиты в Web-админке или [configs/config.docker.yaml](../configs/config.docker.yaml).
+Цели для локальной разработки без Docker сохранены под префиксом `local-*`: `make build`, `make local-start`, `make local-status`, `make local-logs`, `make local-restart`, `make local-stop` ([scripts/gateway.sh](../scripts/gateway.sh), [deployments/cli-ai-gateway.service](../deployments/cli-ai-gateway.service)).

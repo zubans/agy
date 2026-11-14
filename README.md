@@ -1,25 +1,25 @@
 # CLI AI Gateway
 
-Unified OpenAI-compatible HTTP gateway in Go for executing prompts and large file-based tasks across containerized AI CLI agents (`Codex CLI`, `Claude Code CLI`, `Gemini CLI`, `Antigravity CLI` — single or multiple isolated accounts such as `agy-1`, `agy-2`, `agy-3`) and local or remote `Ollama` servers.
+Unified OpenAI-compatible HTTP gateway in Go for executing prompts and large file-based tasks across any number of isolated, containerized AI CLI instances (`claude-*`, `codex-*`, `gemini-*`, `agy-*`) and remote or local `Ollama` servers.
 
 ## Architecture Overview
 
 ```text
 Client -> POST /v1/responses -> gateway container (8080, zero CLIs)
-                                   |-- http://codex:9090  -> codex container (codex + volume codex_home)
-                                   |-- http://claude:9090 -> claude container (claude + volume claude_home)
-                                   |-- http://gemini:9090 -> gemini container (gemini + volume gemini_home)
-                                   |-- http://agy-1:9090  -> agy-1 container (agy + volume agy_1_home)
-                                   |-- http://agy-2:9090  -> agy-2 container (agy + volume agy_2_home)
-                                   |-- http://agy-3:9090  -> agy-3 container (agy + volume agy_3_home)
-                                   `-- http://<host>:11434 -> remote / local Ollama API
+                                   |-- http://claude-1:9090 -> claude-1 container (claude + volume claude_1_home)
+                                   |-- http://claude-2:9090 -> claude-2 container (claude + volume claude_2_home)
+                                   |-- http://codex-1:9090  -> codex-1 container  (codex + volume codex_1_home)
+                                   |-- http://codex-2:9090  -> codex-2 container  (codex + volume codex_2_home)
+                                   |-- http://agy-1:9090    -> agy-1 container    (agy + volume agy_1_home)
+                                   |-- ... (agy-N, codex-N, claude-N, gemini-N via `make agent-add`)
+                                   `-- http://<host>:11434  -> remote / local Ollama API
 ```
 
-- **Zero host CLI dependencies**: Every CLI client is installed inside its own purpose-built Docker image (`worker-codex`, `worker-claude`, `worker-gemini`, `worker-agy`). Multi-account setups run one dedicated container and volume per instance (`agy-1`, `agy-2`, `agy-3`), keeping credentials and sessions strictly separated without mounting `docker.sock`.
-- **Single Go binary (`gateway` & `-worker` modes)**: Uses Go standard library `net/http`, `os/exec`, `context.Context`, `encoding/json`, `mime/multipart`, `log/slog`.
-- **Stateless worker HTTP protocol (`internal/worker`)**: `gateway` streams workspace input files and instructions over `POST /worker/execute` (`multipart/form-data` + `application/x-ndjson`) protected by `GATEWAY_WORKER_TOKEN` Bearer auth; each worker stages into a temporary run directory, enforces PGID cancellation on disconnect/timeout, and removes temporary files before emitting the completion frame.
-- **SQLite metadata store** (`modernc.org/sqlite`, WAL mode) for API keys (SHA-256 hashes), file metadata, sessions, responses, runs, and dynamic/overridden models (`model_overrides`).
-- **Embedded Web Admin UI (`/admin/`)**: Manage enabled/disabled models, `timeout_seconds`, `max_concurrent`, `worker_url` / `base_url`, add remote `ollama` or worker-backed CLI models dynamically, inspect/cancel runs, inspect sessions/files, manage API keys, and test live SSE responses.
+- **Zero host CLI dependencies**: Every CLI client is installed inside its own Docker image (`worker-claude`, `worker-codex`, `worker-gemini`, `worker-agy`). Every account or variant runs in its own container with its own dedicated Docker volume — whether you run 1 Claude or 4, 2 Codexes or 10 Antigravity accounts — with zero `docker.sock` mount.
+- **Dynamic N-worker pool (`scripts/workers.sh` + `Makefile`)**: Declare initial counts during `make init` (`CLAUDE_COUNT=2 CODEX_COUNT=3 AGY_COUNT=5 make init`), or add/remove containers on the fly with `make agent-add` / `make agent-rm`. Adding a container generates `compose.workers.yaml` and `workers.models.yaml` (loaded via `GATEWAY_WORKERS_CONFIG`) and registers the new worker live in running `gateway` with zero downtime.
+- **Stateless worker HTTP protocol (`internal/worker`)**: `gateway` streams workspace input files and instructions over `POST /worker/execute` (`multipart/form-data` + `application/x-ndjson`) protected by `GATEWAY_WORKER_TOKEN` Bearer auth; each worker stages into an ephemeral workspace, enforces PGID cancellation on disconnect/timeout, and cleans temp files before emitting the terminal frame.
+- **SQLite metadata store** (`modernc.org/sqlite`, WAL mode) for API keys (SHA-256 hashes), file metadata, sessions, responses, runs, and `model_overrides`.
+- **Embedded Web Admin UI (`/admin/`)**: Manage enabled/disabled models, `timeout_seconds`, `max_concurrent`, `worker_url` / `base_url`, add remote `ollama` or custom worker URLs dynamically, inspect/cancel runs, inspect sessions/files, manage API keys, and test live SSE responses.
 
 ## Project Structure
 
@@ -36,8 +36,9 @@ Client -> POST /v1/responses -> gateway container (8080, zero CLIs)
 - `internal/streaming/` — OpenAI Responses API and Chat Completions SSE translators.
 - `internal/auth/` — hashed Bearer API keys, revocation, per-key model allowlists.
 - `migrations/` — embedded SQLite migrations (`001_init.sql`, `002_admin.sql`, `003_worker.sql`).
-- `configs/` — `config.docker.yaml` (Docker Compose multi-worker stack) and `config.example.yaml` (standalone host/local binary).
-- `Dockerfile` & `compose.yaml` — multi-target builds (`gateway`, `worker-codex`, `worker-claude`, `worker-gemini`, `worker-agy`) with unprivileged UID `10001`, read-only rootfs, `cap_drop: [ALL]`, `no-new-privileges`, and isolated persistent home volumes.
+- `configs/` — `config.docker.yaml` (Docker Compose core gateway + remote Ollama) and `config.example.yaml` (standalone host/local binary).
+- `scripts/workers.sh` — dynamic worker pool generator & login helper (`.workers` -> `compose.workers.yaml` + `workers.models.yaml`).
+- `Dockerfile` & `compose.yaml` — multi-target builds (`gateway`, `worker-codex`, `worker-claude`, `worker-gemini`, `worker-agy`) with unprivileged UID `10001`, read-only rootfs, `cap_drop: [ALL]`, `no-new-privileges`, and isolated per-container volumes.
 - `docs/` — operations runbook ([docs/operations.md](docs/operations.md)) and OpenAI compatibility notes ([docs/openai-compatibility.md](docs/openai-compatibility.md)).
 - `tests/` — integration, admin API/UI, remote worker, security, and official OpenAI Go SDK compatibility tests.
 
@@ -45,81 +46,97 @@ Client -> POST /v1/responses -> gateway container (8080, zero CLIs)
 
 Only Docker (`docker compose`) and `make` are required on the host machine.
 
-### 1. Initialize `.env` and start all containers
+### 1. Initialize secrets and container pool
 
 ```bash
-make init   # Creates .env with random GATEWAY_API_KEY, GATEWAY_ADMIN_TOKEN, GATEWAY_WORKER_TOKEN
-make up     # Builds images and starts gateway + codex + claude + gemini + agy-1..agy-3
-make ps     # Verify container status and healthchecks
+# Default counts: 1 claude, 1 codex, 1 gemini, 3 agy
+make init
+
+# Or choose any initial count per CLI right from the start:
+make init CLAUDE_COUNT=2 CODEX_COUNT=3 GEMINI_COUNT=1 AGY_COUNT=6
 ```
 
-### 2. Authenticate each containerized CLI agent
+`make init` creates `.env` (random `GATEWAY_API_KEY`, `GATEWAY_ADMIN_TOKEN`, `GATEWAY_WORKER_TOKEN`, plus `COMPOSE_FILE=compose.yaml:compose.workers.yaml`), `.workers`, `compose.workers.yaml`, and `workers.models.yaml` (all gitignored so host deployments stay clean).
 
-Credentials stay inside each service's dedicated Docker volume (`claude_home`, `codex_home`, `gemini_home`, `agy_1_home`, `agy_2_home`, `agy_3_home`):
+### 2. Start gateway and all worker containers
 
 ```bash
-make claude-login          # Runs `claude auth login` inside the claude container
-make codex-login           # Runs `codex login --device-auth` inside the codex container
-make gemini-login          # Runs interactive Gemini CLI login inside the gemini container
-make agy-1-login           # Runs `agy` login inside agy-1 (or `make agy-login ACCOUNT=1`)
-make agy-2-login           # Runs `agy` login inside agy-2 (or `make agy-login ACCOUNT=2`)
-make agy-3-login           # Runs `agy` login inside agy-3 (or `make agy-login ACCOUNT=3`)
+make up
+make ps
+make agent-ls
 ```
 
-### 3. Connect Remote Ollama (Optional)
+### 3. Add more containers at any time (`agy`, `codex`, `claude`, `gemini`)
 
-If Ollama runs on another server (for example `http://10.0.0.50:11434`), set these in `.env` before `make up` (and ensure the Ollama server listens with `OLLAMA_HOST=0.0.0.0:11434`):
+```bash
+make agent-add TYPE=agy COUNT=2            # Adds agy-4, agy-5 (or next free numbers)
+make agent-add TYPE=codex                    # Adds codex-2
+make agent-add TYPE=claude                   # Adds claude-2
+make agent-add TYPE=claude NAME=claude-work  # Custom container & model ID
+```
+
+New containers start immediately and register into running `gateway` live via `/admin/api/models` with zero downtime.
+
+### 4. Authenticate any containerized CLI agent
+
+Each command runs interactive auth inside that container and saves credentials inside its dedicated Docker volume:
+
+```bash
+make claude-login                      # Logs into claude-1
+make claude-login ACCOUNT=2            # Logs into claude-2
+make codex-login                       # Logs into codex-1 (`codex login --device-auth`)
+make codex-login ACCOUNT=2             # Logs into codex-2
+make gemini-login ACCOUNT=1            # Logs into gemini-1
+make agy-login ACCOUNT=1               # Logs into agy-1
+make agy-login ACCOUNT=4               # Logs into agy-4
+make agent-login NAME=claude-work      # Logs into any custom-named container
+```
+
+### 5. Connect Remote Ollama (Optional)
+
+If Ollama runs on another server (e.g. `http://10.0.0.50:11434`), ensure it listens on `OLLAMA_HOST=0.0.0.0:11434` and set in `.env` before `make up`:
 
 ```env
 GATEWAY_OLLAMA_BASE_URL=http://10.0.0.50:11434
 GATEWAY_OLLAMA_MODEL=qwen3
 ```
 
-You can also add/edit multiple Ollama servers or extra worker containers (`agy-4`, etc.) dynamically in the Web Admin UI at `http://127.0.0.1:8080/admin/`.
+Additional Ollama instances can be added/edited anytime via Web Admin (`/admin/`).
 
-### 4. Verify health and run a test call
+### 6. Verify readiness and send a test request
 
 ```bash
 curl -s http://127.0.0.1:8080/health
 curl -s http://127.0.0.1:8080/ready
 
-# Source generated GATEWAY_API_KEY from .env
 set -a && . ./.env && set +a
 curl -s http://127.0.0.1:8080/v1/responses \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"agy-1","input":"Hello from containerized worker"}'
-```
-
-Or run the example Go client:
-
-```bash
-go run ./cmd/example-client -url http://127.0.0.1:8080 -key "$GATEWAY_API_KEY" -model claude
+  -d '{"model":"codex-2","input":"Hello from codex-2 container"}'
 ```
 
 ## Web Admin Console (`/admin/`)
 
-Open `http://127.0.0.1:8080/admin/` and log in with `GATEWAY_ADMIN_TOKEN` from `.env`:
+Open `http://127.0.0.1:8080/admin/` and sign in with `GATEWAY_ADMIN_TOKEN` from `.env`:
 
-- View all configured models (`Ready / Unavailable`), inspect `worker_url` / `base_url`, toggle enable/disable, tune `timeout_seconds` & `max_concurrent`, and trigger live readiness checks.
-- Dynamically register/delete remote `ollama` models (`base_url`) or additional containerized CLI workers (`worker_url`), persisted across restarts in SQLite `model_overrides`.
-- Inspect active runs and forcibly kill hung worker process groups (`POST /admin/api/runs/{id}/cancel`).
-- Issue, scope, revoke, and delete client API keys, inspect/delete sessions (`context.md`) and files, and run interactive SSE prompts in the Playground.
+- View readiness of every worker container and Ollama model, toggle enable/disable, tune `timeout_seconds` / `max_concurrent`, update `worker_url` / `base_url`, and trigger live checks.
+- Dynamically register/delete remote `ollama` models or external worker URLs (persisted in SQLite `model_overrides`).
+- Inspect/cancel live runs (`PGID` killed cleanly inside worker container), manage API keys/sessions/files, and test prompts via SSE Playground.
 
-See the full Russian deployment & operations guide in [docs/operations.md](docs/operations.md).
+See the full Russian operations guide in [docs/operations.md](docs/operations.md).
 
 ## Lifecycle & Local Go Development
 
 ```bash
-make logs SERVICE=agy-1    # Follow logs of a specific container
-make restart SERVICE=agy-1 # Restart a single worker container
-make down                  # Stop containers (volumes with logins remain intact)
+make logs SERVICE=codex-2    # Follow logs of a specific container
+make restart SERVICE=agy-4   # Restart a single container
+make agent-rm NAME=agy-5     # Remove container (keeps auth volume unless PURGE_VOLUME=1)
+make down                    # Stop containers (volumes with logins remain intact)
 
 # Local Go development / tests:
-make lint                  # go vet ./...
-make test                  # go test -race ./...
+make lint                    # go vet ./...
+make test                    # go test -race ./...
 ```
 
 Local non-Docker daemon targets (`make build`, `make local-start`, `make local-stop`, `make local-status`) remain available via [scripts/gateway.sh](scripts/gateway.sh) and [deployments/cli-ai-gateway.service](deployments/cli-ai-gateway.service).
-
-See [docs/openai-compatibility.md](docs/openai-compatibility.md) for the API compatibility matrix.

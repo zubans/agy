@@ -371,20 +371,45 @@ models:
 	})
 }
 
-func TestConfigDockerYAMLValid(t *testing.T) {
+func TestConfigDockerYAMLAndWorkersMerge(t *testing.T) {
+	workersFile := filepath.Join(t.TempDir(), "workers.models.yaml")
+	workersYAML := `
+models:
+  - id: claude-1
+    provider: claude
+    worker_url: http://claude-1:9090
+  - id: claude-2
+    provider: claude
+    worker_url: http://claude-2:9090
+  - id: codex-1
+    provider: codex
+    worker_url: http://codex-1:9090
+  - id: codex-2
+    provider: codex
+    worker_url: http://codex-2:9090
+  - id: agy-4
+    provider: antigravity
+    worker_url: http://agy-4:9090
+`
+	if err := os.WriteFile(workersFile, []byte(workersYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Setenv("GATEWAY_WORKER_TOKEN", "test-docker-worker-token")
+	t.Setenv("GATEWAY_WORKERS_CONFIG", workersFile)
+
 	cfg, err := config.Load(filepath.Join("..", "..", "configs", "config.docker.yaml"))
 	if err != nil {
-		t.Fatalf("configs/config.docker.yaml failed to load/validate: %v", err)
+		t.Fatalf("configs/config.docker.yaml + workers merge failed: %v", err)
 	}
-	wantIDs := []string{"codex", "claude", "gemini", "agy-1", "agy-2", "agy-3", "remote-ollama"}
+	wantIDs := []string{"remote-ollama", "claude-1", "claude-2", "codex-1", "codex-2", "agy-4"}
 	if len(cfg.Models) != len(wantIDs) {
-		t.Fatalf("expected %d models in config.docker.yaml, got %d", len(wantIDs), len(cfg.Models))
+		t.Fatalf("expected %d models after merge, got %d", len(wantIDs), len(cfg.Models))
 	}
 	for _, id := range wantIDs {
 		m, ok := cfg.ModelByID(id)
 		if !ok {
-			t.Fatalf("missing model %q in config.docker.yaml", id)
+			t.Fatalf("missing model %q", id)
 		}
 		if id == "remote-ollama" {
 			if m.EffectiveEnabled() {
@@ -393,7 +418,7 @@ func TestConfigDockerYAMLValid(t *testing.T) {
 			continue
 		}
 		if !strings.HasPrefix(m.WorkerURL, "http://"+id+":9090") || m.WorkerToken != "test-docker-worker-token" {
-			t.Fatalf("unexpected worker config for %q: %+v", id, m)
+			t.Fatalf("unexpected merged worker config for %q: %+v", id, m)
 		}
 	}
 }

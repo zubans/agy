@@ -1,13 +1,14 @@
 .DEFAULT_GOAL := help
 
-DC ?= docker compose
+DC := docker compose -f compose.yaml $(if $(wildcard compose.workers.yaml),-f compose.workers.yaml)
 BINARY := bin/cli-ai-gateway
 CLIENT_BINARY := bin/cli-ai-client
 SERVICE ?= gateway
 ACCOUNT ?= 1
 
 .PHONY: help init env up down restart ps logs \
-        claude-login codex-login gemini-login agy-login agy-1-login agy-2-login agy-3-login \
+        agent-ls agent-add agent-rm agent-login \
+        claude-login codex-login gemini-login agy-login \
         docker-build docker-up docker-down docker-restart docker-logs \
         build run local-start local-stop local-restart local-status local-logs \
         test test-verbose lint fmt clean
@@ -16,10 +17,22 @@ help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "\n\033[1mCLI AI Gateway — Commands\033[0m\n"} \
 	  /^##@/ {printf "\n\033[36m%s\033[0m\n", substr($$0, 5); next} \
 	  /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[33m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-	@printf "\nExamples:\n  make init && make up\n  make claude-login\n  make agy-login ACCOUNT=2\n  make agy-3-login\n  make logs SERVICE=claude\n\n"
+	@printf "\nExamples (any number of isolated containers per agent):\n"
+	@printf "  make init                                        # Create .env + default containers (override CLAUDE_COUNT/CODEX_COUNT/AGY_COUNT)\n"
+	@printf "  CLAUDE_COUNT=2 CODEX_COUNT=3 AGY_COUNT=5 make init\n"
+	@printf "  make up                                          # Build images and start gateway + all worker containers\n"
+	@printf "  make agent-add TYPE=agy COUNT=2                  # Add agy-4, agy-5 containers on the fly\n"
+	@printf "  make agent-add TYPE=codex                        # Add codex-2 (or TYPE=claude NAME=claude-work)\n"
+	@printf "  make claude-login ACCOUNT=2                      # Authenticate claude-2 inside its container\n"
+	@printf "  make codex-login ACCOUNT=2                       # Authenticate codex-2 inside its container\n"
+	@printf "  make agy-login ACCOUNT=4                         # Authenticate agy-4 inside its container\n"
+	@printf "  make agent-login NAME=claude-work                # Authenticate any custom-named worker container\n"
+	@printf "  make agent-ls                                    # List all worker containers, URLs, and auth volumes\n\n"
 
 ##@ Docker Stack (Recommended)
-init: env ## Create .env with generated random tokens (idempotent)
+init: env ## Create .env (secrets) & initial worker pool (.workers -> compose.workers.yaml)
+	@chmod +x scripts/workers.sh
+	@$(if $(CLAUDE_COUNT),CLAUDE_COUNT="$(CLAUDE_COUNT)") $(if $(CODEX_COUNT),CODEX_COUNT="$(CODEX_COUNT)") $(if $(GEMINI_COUNT),GEMINI_COUNT="$(GEMINI_COUNT)") $(if $(AGY_COUNT),AGY_COUNT="$(AGY_COUNT)") ./scripts/workers.sh init
 
 env:
 	@if [ -f .env ]; then \
@@ -39,22 +52,22 @@ env:
 		echo "Created .env with generated GATEWAY_API_KEY, GATEWAY_ADMIN_TOKEN, GATEWAY_WORKER_TOKEN"; \
 	fi
 
-up: init ## Build images and start gateway + all CLI worker containers
+up: init ## Build images and start gateway + all worker containers
 	$(DC) up -d --build
 
 down: ## Stop and remove containers (preserves persistent auth volumes)
 	$(DC) down
 
-restart: ## Restart containers (override SERVICE=agy-1 to restart one)
+restart: ## Restart containers (override SERVICE=agy-4 to restart one)
 	$(DC) restart $(SERVICE)
 
 ps: ## Show status and health of all containers
 	$(DC) ps
 
-logs: ## Follow logs (override SERVICE=claude|codex|gemini|agy-1|...)
+logs: ## Follow logs (override SERVICE=codex-2|claude-1|agy-4|...)
 	$(DC) logs -f $(SERVICE)
 
-docker-build: ## Build all Docker images without starting
+docker-build: init ## Build all Docker images without starting
 	$(DC) build
 
 docker-up: up ## Alias for up
@@ -66,27 +79,30 @@ docker-restart: ## Restart gateway container
 
 docker-logs: logs ## Alias for logs
 
-##@ Agent Authentication (Inside Worker Containers)
-claude-login: ## Authenticate Claude Code CLI inside the 'claude' container
-	$(DC) exec -it claude claude auth login
+##@ Multi-Container Worker Pool & Auth
+agent-ls: ## List all worker containers, worker_urls, and auth volumes
+	@./scripts/workers.sh ls
 
-codex-login: ## Authenticate Codex CLI inside the 'codex' container (device auth)
-	$(DC) exec -it codex codex login --device-auth
+agent-add: ## Add isolated container(s): TYPE=agy|codex|claude|gemini [NAME=...] [SLOT=...] [COUNT=1]
+	@TYPE="$(TYPE)" NAME="$(NAME)" SLOT="$(SLOT)" COUNT="$(COUNT)" ./scripts/workers.sh add
 
-gemini-login: ## Authenticate Gemini CLI inside the 'gemini' container
-	$(DC) exec -it -e NO_BROWSER=true gemini gemini
+agent-rm: ## Remove a worker container: NAME=<container> [PURGE_VOLUME=1]
+	@NAME="$(NAME)" PURGE_VOLUME="$(PURGE_VOLUME)" ./scripts/workers.sh rm
 
-agy-login: ## Authenticate Antigravity worker (pass ACCOUNT=1|2|3, default 1)
-	$(DC) exec -it agy-$(ACCOUNT) agy
+agent-login: ## Run interactive login in any container: NAME=<container> (or TYPE=... ACCOUNT=...)
+	@NAME="$(NAME)" TYPE="$(TYPE)" ACCOUNT="$(ACCOUNT)" ./scripts/workers.sh login
 
-agy-1-login: ## Authenticate Antigravity container agy-1
-	@$(MAKE) agy-login ACCOUNT=1
+claude-login: ## Authenticate Claude container (ACCOUNT=1|2|... or NAME=...)
+	@TYPE=claude ACCOUNT="$(ACCOUNT)" NAME="$(NAME)" ./scripts/workers.sh login
 
-agy-2-login: ## Authenticate Antigravity container agy-2
-	@$(MAKE) agy-login ACCOUNT=2
+codex-login: ## Authenticate Codex container (ACCOUNT=1|2|... or NAME=...)
+	@TYPE=codex ACCOUNT="$(ACCOUNT)" NAME="$(NAME)" ./scripts/workers.sh login
 
-agy-3-login: ## Authenticate Antigravity container agy-3
-	@$(MAKE) agy-login ACCOUNT=3
+gemini-login: ## Authenticate Gemini container (ACCOUNT=1|2|... or NAME=...)
+	@TYPE=gemini ACCOUNT="$(ACCOUNT)" NAME="$(NAME)" ./scripts/workers.sh login
+
+agy-login: ## Authenticate Antigravity container (ACCOUNT=1|2|3|4|... or NAME=...)
+	@TYPE=agy ACCOUNT="$(ACCOUNT)" NAME="$(NAME)" ./scripts/workers.sh login
 
 ##@ Local Go Development & Tests
 build: ## Build Go gateway and example client binaries locally

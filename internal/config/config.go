@@ -156,12 +156,49 @@ func Parse(data []byte) (*Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parse config yaml: %w", err)
 	}
+	if err := mergeExtraWorkersConfig(&cfg); err != nil {
+		return nil, err
+	}
 	applyDefaults(&cfg)
 	applyEnvOverrides(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func mergeExtraWorkersConfig(cfg *Config) error {
+	workersPath := strings.TrimSpace(os.Getenv("GATEWAY_WORKERS_CONFIG"))
+	if workersPath == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(workersPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read workers config %q: %w", workersPath, err)
+	}
+	var extra struct {
+		Models []ModelConfig `yaml:"models"`
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&extra); err != nil {
+		return fmt.Errorf("parse workers config %q: %w", workersPath, err)
+	}
+	seen := make(map[string]struct{}, len(cfg.Models))
+	for _, m := range cfg.Models {
+		seen[m.ID] = struct{}{}
+	}
+	for _, m := range extra.Models {
+		if _, exists := seen[m.ID]; exists {
+			continue
+		}
+		seen[m.ID] = struct{}{}
+		cfg.Models = append(cfg.Models, m)
+	}
+	return nil
 }
 
 func applyDefaults(cfg *Config) {
