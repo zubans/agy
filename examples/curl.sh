@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${GATEWAY_URL:-http://127.0.0.1:8080}"
+BASE_URL="${GATEWAY_URL:-http://127.0.0.1:7070}"
 API_KEY="${GATEWAY_API_KEY:-gw-dev-change-me}"
 MODEL="${GATEWAY_MODEL:-codex}"
 

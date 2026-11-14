@@ -9,7 +9,7 @@
 Ни один CLI-клиент не ставится на хост. Для **каждого экземпляра** любого агента поднимается свой Docker-контейнер и свой persistent volume:
 
 ```text
-Client -> POST /v1/responses -> gateway (8080, бинарников CLI нет)
+Client -> POST /v1/responses -> gateway (7070, бинарников CLI нет)
                                   |-- http://claude-1:9090 -> claude-1 (claude + volume claude_1_home)
                                   |-- http://claude-2:9090 -> claude-2 (claude + volume claude_2_home)
                                   |-- http://codex-1:9090  -> codex-1  (codex  + volume codex_1_home)
@@ -136,7 +136,7 @@ make agent-login NAME=codex-2
 Проверка готовности всех контейнеров:
 
 ```bash
-curl -s http://127.0.0.1:8080/ready
+curl -s http://127.0.0.1:7070/ready
 ```
 
 ---
@@ -161,7 +161,7 @@ make up                      # повторный запуск / обновле�
 | --- | --- |
 | `COMPOSE_FILE` | В `.env`: `compose.yaml:compose.workers.yaml` |
 | `CLAUDE_COUNT` / `CODEX_COUNT` / `GEMINI_COUNT` / `AGY_COUNT` | Стартовое число контейнеров при `make init` (по умолчанию `1/1/1/3`) |
-| `GATEWAY_BIND_HOST` / `GATEWAY_PORT` | Host IP и порт публикации `gateway` (по умолчанию `127.0.0.1:8080`) |
+| `GATEWAY_BIND_HOST` / `GATEWAY_PORT` | Host IP и порт публикации `gateway` (по умолчанию `127.0.0.1:7070`) |
 | `GATEWAY_API_KEY` | Переопределяет клиентский Bearer-ключ для `/v1/*` |
 | `GATEWAY_ADMIN_TOKEN` | Токен входа в Web-админку `/admin/` |
 | `GATEWAY_WORKER_TOKEN` | Общий Bearer-токен между `gateway` и всеми воркерами (`:9090`) |
@@ -173,7 +173,7 @@ make up                      # повторный запуск / обновле�
 
 ## 7. Встроенная Web-админка (`/admin/`) и API
 
-Откройте `http://127.0.0.1:8080/admin/` (либо через SSH-туннель `ssh -L 8080:127.0.0.1:8080 user@server`) и войдите по `GATEWAY_ADMIN_TOKEN` из `.env`:
+Откройте `http://127.0.0.1:7070/admin/` (либо через SSH-туннель `ssh -L 7070:127.0.0.1:7070 user@server`) и войдите по `GATEWAY_ADMIN_TOKEN` из `.env`:
 - **Модели, воркеры и Ollama**: просмотр статуса готовности каждого `claude-*`, `codex-*`, `gemini-*`, `agy-*` и `remote-ollama`, отключение/включение, настройка `timeout_seconds`, `max_concurrent`, `worker_url` / `base_url`, динамическое добавление удалённых Ollama и внешних воркеров (`model_overrides` в SQLite).
 - **Запуски, сессии, файлы, API-ключи и песочница SSE**: отмена зависших запусков (завершает `PGID` процесса внутри воркера), управление клиентскими ключами, проверка потокового ответа в Playground.
 
@@ -181,7 +181,7 @@ make up                      # повторный запуск / обновле�
 
 ```bash
 set -a && . ./.env && set +a
-curl -s http://127.0.0.1:${GATEWAY_PORT:-8080}/v1/responses \
+curl -s http://127.0.0.1:${GATEWAY_PORT:-7070}/v1/responses \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"codex-2","input":"Проверь контейнер codex-2"}'

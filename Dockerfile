@@ -35,7 +35,7 @@ WORKDIR /var/lib/cli-gateway
 ENV GATEWAY_CONFIG=/etc/cli-ai-gateway/config.yaml \
     HOME=/var/lib/cli-gateway/home
 
-EXPOSE 8080
+EXPOSE 7070
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/bin/cli-ai-gateway", "-healthcheck"]

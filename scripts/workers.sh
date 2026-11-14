@@ -248,7 +248,7 @@ cmd_init() {
 
 gateway_api_url() {
   local host="${GATEWAY_BIND_HOST:-127.0.0.1}"
-  local port="${GATEWAY_PORT:-8080}"
+  local port="${GATEWAY_PORT:-7070}"
   if [ "$host" = "0.0.0.0" ] || [ "$host" = "::" ] || [ -z "$host" ]; then
     host="127.0.0.1"
   fi

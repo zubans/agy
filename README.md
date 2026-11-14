@@ -5,7 +5,7 @@ Unified OpenAI-compatible HTTP gateway in Go for executing prompts and large fil
 ## Architecture Overview
 
 ```text
-Client -> POST /v1/responses -> gateway container (8080, zero CLIs)
+Client -> POST /v1/responses -> gateway container (7070, zero CLIs)
                                    |-- http://claude-1:9090 -> claude-1 container (claude + volume claude_1_home)
                                    |-- http://claude-2:9090 -> claude-2 container (claude + volume claude_2_home)
                                    |-- http://codex-1:9090  -> codex-1 container  (codex + volume codex_1_home)
@@ -106,11 +106,11 @@ Additional Ollama instances can be added/edited anytime via Web Admin (`/admin/`
 ### 6. Verify readiness and send a test request
 
 ```bash
-curl -s http://127.0.0.1:8080/health
-curl -s http://127.0.0.1:8080/ready
+curl -s http://127.0.0.1:7070/health
+curl -s http://127.0.0.1:7070/ready
 
 set -a && . ./.env && set +a
-curl -s http://127.0.0.1:8080/v1/responses \
+curl -s http://127.0.0.1:7070/v1/responses \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"codex-2","input":"Hello from codex-2 container"}'
@@ -118,7 +118,7 @@ curl -s http://127.0.0.1:8080/v1/responses \
 
 ## Web Admin Console (`/admin/`)
 
-Open `http://127.0.0.1:8080/admin/` and sign in with `GATEWAY_ADMIN_TOKEN` from `.env`:
+Open `http://127.0.0.1:7070/admin/` and sign in with `GATEWAY_ADMIN_TOKEN` from `.env`:
 
 - View readiness of every worker container and Ollama model, toggle enable/disable, tune `timeout_seconds` / `max_concurrent`, update `worker_url` / `base_url`, and trigger live checks.
 - Dynamically register/delete remote `ollama` models or external worker URLs (persisted in SQLite `model_overrides`).
