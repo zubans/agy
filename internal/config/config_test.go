@@ -42,7 +42,7 @@ models:
 		t.Fatalf("Load valid config failed: %v", err)
 	}
 
-	if cfg.Server.Listen != "127.0.0.1:8080" {
+	if cfg.Server.Listen != "127.0.0.1:7070" {
 		t.Fatalf("unexpected default listen: %q", cfg.Server.Listen)
 	}
 	if cfg.Storage.MaxFileBytes != 50*1024*1024 {
@@ -68,7 +68,7 @@ models:
 func TestEnvOverrides(t *testing.T) {
 	yamlCfg := `
 server:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7070
 storage:
   path: /tmp/original
 models:
@@ -104,7 +104,7 @@ models:
 func TestParseRejectsUnknownFields(t *testing.T) {
 	yamlCfg := `
 server:
-  listen: 127.0.0.1:8080
+  listen: 127.0.0.1:7070
   unknown_field: 123
 models:
   - id: ollama-1
@@ -125,7 +125,7 @@ func TestValidateErrors(t *testing.T) {
 	}{
 		{
 			name:      "missing models",
-			yaml:      `server: { listen: "127.0.0.1:8080" }`,
+			yaml:      `server: { listen: "127.0.0.1:7070" }`,
 			wantMatch: "at least one model",
 		},
 		{

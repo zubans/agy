@@ -25,7 +25,7 @@ type Client struct {
 	fileCache map[string]string // content sha256 -> file_id
 }
 
-// New creates a gateway Client pointing at baseURL (e.g. "http://127.0.0.1:8080").
+// New creates a gateway Client pointing at baseURL (e.g. "http://127.0.0.1:7070").
 func New(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),

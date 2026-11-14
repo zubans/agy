@@ -211,7 +211,7 @@ func runHealthcheck(configPath string) int {
 			}
 		}
 		if listenAddr == "" || strings.HasPrefix(listenAddr, ":") || strings.HasPrefix(listenAddr, "0.0.0.0:") {
-			port := "8080"
+			port := "7070"
 			if idx := strings.LastIndex(listenAddr, ":"); idx >= 0 && idx+1 < len(listenAddr) {
 				port = listenAddr[idx+1:]
 			}

@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	baseURL := flag.String("url", "http://127.0.0.1:8080", "Gateway base URL")
+	baseURL := flag.String("url", "http://127.0.0.1:7070", "Gateway base URL")
 	apiKey := flag.String("key", "gw-dev-change-me", "Gateway Bearer API key")
 	model := flag.String("model", "codex", "Target model ID (codex, antigravity, gemini, claude, local-qwen)")
 	stream := flag.Bool("stream", true, "Use SSE streaming")
