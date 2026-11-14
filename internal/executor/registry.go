@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -138,22 +139,23 @@ func (r *Registry) CheckOne(ctx context.Context, modelID string) (ExecutorStatus
 	return st, true
 }
 
-// ModelPatch describes safe runtime changes permitted via Web Admin without mutating CLI binary paths.
+// ModelPatch describes safe runtime changes permitted via Web Admin without mutating local CLI binary paths.
 type ModelPatch struct {
 	Enabled        *bool
 	TimeoutSeconds *int
 	MaxConcurrent  *int
 	Model          *string
 	BaseURL        *string
+	WorkerURL      *string
 }
 
-// ApplyOverrides restores persisted runtime overrides and dynamically added Ollama models from SQLite.
+// ApplyOverrides restores persisted runtime overrides and dynamically added models from SQLite.
 func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, provider, base_url, model, enabled, timeout_seconds, max_concurrent, dynamic
+		SELECT id, provider, base_url, worker_url, model, enabled, timeout_seconds, max_concurrent, dynamic
 		FROM model_overrides
 		WHERE deleted = 0
 		ORDER BY updated_at ASC
@@ -164,14 +166,14 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 	defer rows.Close()
 
 	type rowData struct {
-		id, provider, baseURL, model   string
-		enabled, timeoutSec, maxConcur sql.NullInt64
-		dynamic                        int
+		id, provider, baseURL, workerURL, model string
+		enabled, timeoutSec, maxConcur          sql.NullInt64
+		dynamic                                 int
 	}
 	var loaded []rowData
 	for rows.Next() {
 		var it rowData
-		if err := rows.Scan(&it.id, &it.provider, &it.baseURL, &it.model, &it.enabled, &it.timeoutSec, &it.maxConcur, &it.dynamic); err != nil {
+		if err := rows.Scan(&it.id, &it.provider, &it.baseURL, &it.workerURL, &it.model, &it.enabled, &it.timeoutSec, &it.maxConcur, &it.dynamic); err != nil {
 			return err
 		}
 		loaded = append(loaded, it)
@@ -186,7 +188,7 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 	for _, it := range loaded {
 		existing, exists := r.models[it.id]
 		if !exists {
-			if it.dynamic == 0 || it.provider != "ollama" {
+			if it.dynamic == 0 {
 				continue
 			}
 			en := true
@@ -201,15 +203,39 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 			if it.maxConcur.Valid && it.maxConcur.Int64 > 0 {
 				maxC = int(it.maxConcur.Int64)
 			}
-			cfg := config.ModelConfig{
-				ID:             it.id,
-				Provider:       "ollama",
-				BaseURL:        it.baseURL,
-				Model:          it.model,
-				TimeoutSeconds: timeout,
-				MaxConcurrent:  maxC,
-				FSAccess:       "workspace-read",
-				Enabled:        &en,
+			var cfg config.ModelConfig
+			switch it.provider {
+			case "ollama":
+				if strings.TrimSpace(it.baseURL) == "" || strings.TrimSpace(it.model) == "" {
+					continue
+				}
+				cfg = config.ModelConfig{
+					ID:             it.id,
+					Provider:       "ollama",
+					BaseURL:        it.baseURL,
+					Model:          it.model,
+					TimeoutSeconds: timeout,
+					MaxConcurrent:  maxC,
+					FSAccess:       "workspace-read",
+					Enabled:        &en,
+				}
+			case "codex", "antigravity", "gemini", "claude":
+				if strings.TrimSpace(it.workerURL) == "" {
+					continue
+				}
+				cfg = config.ModelConfig{
+					ID:             it.id,
+					Provider:       it.provider,
+					WorkerURL:      it.workerURL,
+					WorkerToken:    strings.TrimSpace(os.Getenv("GATEWAY_WORKER_TOKEN")),
+					Model:          it.model,
+					TimeoutSeconds: timeout,
+					MaxConcurrent:  maxC,
+					FSAccess:       "workspace-read",
+					Enabled:        &en,
+				}
+			default:
+				continue
 			}
 			if err := r.registerSingleLocked(cfg, true); err != nil {
 				continue
@@ -233,6 +259,9 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 		}
 		if it.baseURL != "" && cfg.Provider == "ollama" {
 			cfg.BaseURL = it.baseURL
+		}
+		if it.workerURL != "" && cfg.WorkerURL != "" {
+			cfg.WorkerURL = it.workerURL
 		}
 		_ = r.registerSingleLocked(cfg, existing.Dynamic)
 	}
@@ -276,10 +305,19 @@ func (r *Registry) UpdateRuntimeModel(ctx context.Context, db *sql.DB, id string
 		if cfg.Provider != "ollama" {
 			return ModelInfo{}, fmt.Errorf("%w: base_url can only be changed for ollama models", ErrInvalidModelConfig)
 		}
-		if err := validateHTTPURL(*patch.BaseURL); err != nil {
+		if err := validateHTTPURL("base_url", *patch.BaseURL); err != nil {
 			return ModelInfo{}, err
 		}
 		cfg.BaseURL = strings.TrimSpace(*patch.BaseURL)
+	}
+	if patch.WorkerURL != nil {
+		if strings.TrimSpace(cfg.WorkerURL) == "" {
+			return ModelInfo{}, fmt.Errorf("%w: worker_url can only be changed for remote worker models", ErrInvalidModelConfig)
+		}
+		if err := validateHTTPURL("worker_url", *patch.WorkerURL); err != nil {
+			return ModelInfo{}, err
+		}
+		cfg.WorkerURL = strings.TrimSpace(*patch.WorkerURL)
 	}
 
 	if err := r.registerSingleLocked(cfg, existing.Dynamic); err != nil {
@@ -291,22 +329,50 @@ func (r *Registry) UpdateRuntimeModel(ctx context.Context, db *sql.DB, id string
 	return r.models[id], nil
 }
 
-// AddDynamicOllamaModel validates and registers a new dynamic Ollama model at runtime.
+// AddDynamicOllamaModel validates and registers a dynamic Ollama model (compatibility wrapper around AddDynamicModel).
 func (r *Registry) AddDynamicOllamaModel(ctx context.Context, db *sql.DB, cfg config.ModelConfig) (ModelInfo, error) {
-	cfg.ID = strings.TrimSpace(cfg.ID)
 	cfg.Provider = "ollama"
+	return r.AddDynamicModel(ctx, db, cfg)
+}
+
+// AddDynamicModel validates and registers a dynamic Ollama model or remote worker CLI model at runtime.
+func (r *Registry) AddDynamicModel(ctx context.Context, db *sql.DB, cfg config.ModelConfig) (ModelInfo, error) {
+	cfg.ID = strings.TrimSpace(cfg.ID)
+	cfg.Provider = strings.TrimSpace(cfg.Provider)
+	if cfg.Provider == "" {
+		cfg.Provider = "ollama"
+	}
 	cfg.BaseURL = strings.TrimSpace(cfg.BaseURL)
+	cfg.WorkerURL = strings.TrimSpace(cfg.WorkerURL)
 	cfg.Model = strings.TrimSpace(cfg.Model)
+	cfg.Executable = ""
+	cfg.HomeDir = ""
 
 	if cfg.ID == "" || strings.ContainsAny(cfg.ID, "/\\ \t\n") {
 		return ModelInfo{}, fmt.Errorf("%w: invalid model id", ErrInvalidModelConfig)
 	}
-	if err := validateHTTPURL(cfg.BaseURL); err != nil {
-		return ModelInfo{}, err
+
+	switch cfg.Provider {
+	case "ollama":
+		cfg.WorkerURL = ""
+		if err := validateHTTPURL("base_url", cfg.BaseURL); err != nil {
+			return ModelInfo{}, err
+		}
+		if cfg.Model == "" {
+			return ModelInfo{}, fmt.Errorf("%w: ollama model name is required", ErrInvalidModelConfig)
+		}
+	case "codex", "antigravity", "gemini", "claude":
+		cfg.BaseURL = ""
+		if err := validateHTTPURL("worker_url", cfg.WorkerURL); err != nil {
+			return ModelInfo{}, err
+		}
+		if strings.TrimSpace(cfg.WorkerToken) == "" {
+			cfg.WorkerToken = strings.TrimSpace(os.Getenv("GATEWAY_WORKER_TOKEN"))
+		}
+	default:
+		return ModelInfo{}, fmt.Errorf("%w: dynamic registration only supports ollama or remote CLI worker providers", ErrInvalidModelConfig)
 	}
-	if cfg.Model == "" {
-		return ModelInfo{}, fmt.Errorf("%w: ollama model name is required", ErrInvalidModelConfig)
-	}
+
 	if cfg.TimeoutSeconds <= 0 {
 		cfg.TimeoutSeconds = 600
 	}
@@ -386,10 +452,10 @@ func (r *Registry) registerSingleLocked(cfg config.ModelConfig, dynamic bool) er
 	return nil
 }
 
-func validateHTTPURL(raw string) error {
+func validateHTTPURL(field, raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("%w: invalid http/https base_url %q", ErrInvalidModelConfig, raw)
+		return fmt.Errorf("%w: invalid http/https %s %q", ErrInvalidModelConfig, field, raw)
 	}
 	return nil
 }
@@ -411,11 +477,12 @@ func persistModelOverride(ctx context.Context, db *sql.DB, cfg config.ModelConfi
 		delInt = 1
 	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO model_overrides (id, provider, base_url, model, enabled, timeout_seconds, max_concurrent, dynamic, deleted, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO model_overrides (id, provider, base_url, worker_url, model, enabled, timeout_seconds, max_concurrent, dynamic, deleted, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			provider = excluded.provider,
 			base_url = excluded.base_url,
+			worker_url = excluded.worker_url,
 			model = excluded.model,
 			enabled = excluded.enabled,
 			timeout_seconds = excluded.timeout_seconds,
@@ -423,7 +490,7 @@ func persistModelOverride(ctx context.Context, db *sql.DB, cfg config.ModelConfi
 			dynamic = excluded.dynamic,
 			deleted = excluded.deleted,
 			updated_at = excluded.updated_at
-	`, cfg.ID, cfg.Provider, cfg.BaseURL, cfg.Model, enInt, cfg.TimeoutSeconds, cfg.MaxConcurrent, dynInt, delInt, time.Now().Unix())
+	`, cfg.ID, cfg.Provider, cfg.BaseURL, cfg.WorkerURL, cfg.Model, enInt, cfg.TimeoutSeconds, cfg.MaxConcurrent, dynInt, delInt, time.Now().Unix())
 	return err
 }
 

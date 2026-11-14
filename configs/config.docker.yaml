@@ -1,0 +1,63 @@
+server:
+  listen: "0.0.0.0:8080"
+  read_header_timeout_seconds: 15
+  shutdown_timeout_seconds: 30
+
+storage:
+  path: "/var/lib/cli-gateway"
+  max_file_bytes: 52428800        # 50 MiB
+  quota_bytes: 2147483648         # 2 GiB
+  file_ttl_seconds: 86400         # 24 hours
+  run_ttl_seconds: 604800         # 7 days
+  session_ttl_seconds: 2592000    # 30 days
+  cleanup_interval_seconds: 300
+  cleanup_run_input: true
+
+limits:
+  max_global_processes: 32
+  max_executor_processes: 4
+  max_user_processes: 4
+  max_queue_size: 64
+  queue_wait_timeout_seconds: 30
+  session_lock_timeout_seconds: 120
+  max_output_bytes: 16777216      # 16 MiB
+  max_files_per_task: 10
+  default_timeout_seconds: 600
+  max_timeout_seconds: 1800
+
+logging:
+  level: "info"
+  diagnostic: false
+
+admin:
+  enabled: true
+  # Overridden by GATEWAY_ADMIN_TOKEN from .env
+  token: "gw-admin-change-me"
+  allow_without_auth: false
+
+auth:
+  keys:
+    - id: "key_dev_default"
+      owner_id: "user_default"
+      name: "Default API client"
+      # Overridden by GATEWAY_API_KEY from .env
+      key: "gw-dev-change-me"
+      allowed_models: ["*"]
+      max_concurrent: 4
+      revoked: false
+
+models:
+  # Containerized CLI worker models (claude-*, codex-*, gemini-*, agy-*) are generated
+  # into workers.models.yaml by `make init` / `make agent-add` and merged automatically via
+  # GATEWAY_WORKERS_CONFIG=/etc/cli-ai-gateway/workers.yaml. You can still pin custom static
+  # models here if needed (IDs here take precedence over workers.models.yaml).
+
+  # Remote Ollama server (set GATEWAY_OLLAMA_BASE_URL in .env to enable automatically,
+  # or add/edit multiple Ollama servers dynamically via the Web Admin UI at /admin/).
+  - id: remote-ollama
+    provider: ollama
+    base_url: http://10.0.0.50:11434
+    model: qwen3
+    timeout_seconds: 600
+    max_concurrent: 4
+    enabled: false

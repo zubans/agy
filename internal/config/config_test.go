@@ -307,3 +307,118 @@ models:
 		}
 	})
 }
+
+func TestWorkerURLAndEnvOverrides(t *testing.T) {
+	yamlCfg := `
+admin:
+  enabled: true
+  token: yaml-admin
+auth:
+  keys:
+    - id: k1
+      owner_id: u1
+      key: yaml-api-key
+models:
+  - id: agy-1
+    provider: antigravity
+    worker_url: http://agy-1:9090
+  - id: remote-ollama
+    provider: ollama
+    base_url: http://127.0.0.1:11434
+    model: qwen3
+    enabled: false
+`
+	t.Setenv("GATEWAY_WORKER_TOKEN", "worker-secret-1")
+	t.Setenv("GATEWAY_API_KEY", "env-api-key")
+	t.Setenv("GATEWAY_OLLAMA_BASE_URL", "http://10.0.0.50:11434")
+	t.Setenv("GATEWAY_OLLAMA_MODEL", "llama3.3")
+
+	cfg, err := config.Parse([]byte(yamlCfg))
+	if err != nil {
+		t.Fatalf("Parse failed with worker_url config: %v", err)
+	}
+	if cfg.Models[0].WorkerToken != "worker-secret-1" {
+		t.Fatalf("expected GATEWAY_WORKER_TOKEN applied to worker model, got %q", cfg.Models[0].WorkerToken)
+	}
+	if cfg.Auth.Keys[0].EffectiveHash() != shaHex("env-api-key") {
+		t.Fatalf("expected GATEWAY_API_KEY override to update default key hash")
+	}
+	if cfg.Models[1].BaseURL != "http://10.0.0.50:11434" || cfg.Models[1].Model != "llama3.3" || !cfg.Models[1].EffectiveEnabled() {
+		t.Fatalf("expected GATEWAY_OLLAMA_BASE_URL/MODEL to enable & update ollama, got %+v", cfg.Models[1])
+	}
+
+	t.Run("invalid worker_url rejected", func(t *testing.T) {
+		bad := `
+models:
+  - id: agy-bad
+    provider: antigravity
+    worker_url: ftp://agy-1:9090
+`
+		if _, err := config.Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "invalid worker_url") {
+			t.Fatalf("expected invalid worker_url error, got %v", err)
+		}
+	})
+
+	t.Run("missing both executable and worker_url rejected", func(t *testing.T) {
+		bad := `
+models:
+  - id: claude-missing
+    provider: claude
+`
+		if _, err := config.Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "executable is required (unless worker_url is set)") {
+			t.Fatalf("expected executable is required error, got %v", err)
+		}
+	})
+}
+
+func TestConfigDockerYAMLAndWorkersMerge(t *testing.T) {
+	workersFile := filepath.Join(t.TempDir(), "workers.models.yaml")
+	workersYAML := `
+models:
+  - id: claude-1
+    provider: claude
+    worker_url: http://claude-1:9090
+  - id: claude-2
+    provider: claude
+    worker_url: http://claude-2:9090
+  - id: codex-1
+    provider: codex
+    worker_url: http://codex-1:9090
+  - id: codex-2
+    provider: codex
+    worker_url: http://codex-2:9090
+  - id: agy-4
+    provider: antigravity
+    worker_url: http://agy-4:9090
+`
+	if err := os.WriteFile(workersFile, []byte(workersYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GATEWAY_WORKER_TOKEN", "test-docker-worker-token")
+	t.Setenv("GATEWAY_WORKERS_CONFIG", workersFile)
+
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "config.docker.yaml"))
+	if err != nil {
+		t.Fatalf("configs/config.docker.yaml + workers merge failed: %v", err)
+	}
+	wantIDs := []string{"remote-ollama", "claude-1", "claude-2", "codex-1", "codex-2", "agy-4"}
+	if len(cfg.Models) != len(wantIDs) {
+		t.Fatalf("expected %d models after merge, got %d", len(wantIDs), len(cfg.Models))
+	}
+	for _, id := range wantIDs {
+		m, ok := cfg.ModelByID(id)
+		if !ok {
+			t.Fatalf("missing model %q", id)
+		}
+		if id == "remote-ollama" {
+			if m.EffectiveEnabled() {
+				t.Fatalf("expected remote-ollama disabled by default when GATEWAY_OLLAMA_BASE_URL is unset")
+			}
+			continue
+		}
+		if !strings.HasPrefix(m.WorkerURL, "http://"+id+":9090") || m.WorkerToken != "test-docker-worker-token" {
+			t.Fatalf("unexpected merged worker config for %q: %+v", id, m)
+		}
+	}
+}

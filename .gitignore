@@ -5,4 +5,7 @@
 *.db-shm
 *.db-wal
 .env
+.workers
+compose.workers.yaml
+workers.models.yaml
 /tmp/

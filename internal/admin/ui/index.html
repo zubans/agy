@@ -335,8 +335,8 @@
         <div class="card-head">
           <h2>Исполнители и модели</h2>
           <div class="row">
-            <button class="btn" id="btn-check-all-models">Проверить все CLI / Ollama</button>
-            <button class="btn primary" id="btn-open-add-model">+ Добавить Ollama-модель</button>
+            <button class="btn" id="btn-check-all-models">Проверить все CLI / Worker / Ollama</button>
+            <button class="btn primary" id="btn-open-add-model">+ Добавить модель</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -794,7 +794,11 @@ Ollama:
       if (m.dynamic) idTd.appendChild(mk("span", { class: "pill muted" }, "dynamic"));
       tr.appendChild(idTd);
 
-      const target = m.provider === "ollama" ? `${m.model} @ ${m.base_url}` : (m.executable || m.model || "-");
+      const target = m.provider === "ollama"
+        ? `${m.model} @ ${m.base_url}`
+        : m.worker_url
+          ? `worker: ${m.worker_url}${m.model ? ` (${m.model})` : ""}`
+          : (m.executable || m.model || "-");
       const provTd = mk("td");
       provTd.appendChild(mk("div", { style: "font-weight:600" }, m.provider));
       provTd.appendChild(mk("div", { class: "mono truncate", title: target }, target));
@@ -870,12 +874,14 @@ Ollama:
     const fMax = mk("input", { type: "number", value: m.max_concurrent, min: 1, max: 256 });
     const fVariant = mk("input", { type: "text", value: m.model || "", placeholder: "модель провайдера (напр. qwen3 / gpt-5.3-codex)" });
     const fBaseURL = mk("input", { type: "text", value: m.base_url || "", placeholder: "http://127.0.0.1:11434" });
+    const fWorkerURL = mk("input", { type: "text", value: m.worker_url || "", placeholder: "http://agy-1:9090" });
 
     const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
     form.appendChild(wrap("Timeout (сек)", fTimeout));
     form.appendChild(wrap("Max Concurrent", fMax));
     form.appendChild(wrap("Имя модели провайдера", fVariant));
     if (m.provider === "ollama") form.appendChild(wrap("Ollama Base URL", fBaseURL));
+    if (m.worker_url) form.appendChild(wrap("Worker URL", fWorkerURL));
 
     form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Сохранить"));
     form.onsubmit = async (e) => {
@@ -886,6 +892,7 @@ Ollama:
         model: fVariant.value
       };
       if (m.provider === "ollama") payload.base_url = fBaseURL.value;
+      if (m.worker_url) payload.worker_url = fWorkerURL.value;
       try {
         await api(`/models/${encodeURIComponent(m.id)}`, { method: "PATCH", json: payload });
         closeModal();
@@ -904,39 +911,70 @@ Ollama:
 
   $("btn-open-add-model").onclick = () => {
     const form = mk("form");
-    const fId = mk("input", { type: "text", placeholder: "local-llama3", required: true });
-    const fUrl = mk("input", { type: "text", value: "http://127.0.0.1:11434", required: true });
-    const fModel = mk("input", { type: "text", placeholder: "llama3.2", required: true });
+    const fProvider = mk("select");
+    for (const [val, label] of [
+      ["ollama", "ollama (удалённый / локальный Ollama API)"],
+      ["antigravity", "antigravity (Docker worker agy)"],
+      ["claude", "claude (Docker worker claude)"],
+      ["codex", "codex (Docker worker codex)"],
+      ["gemini", "gemini (Docker worker gemini)"]
+    ]) {
+      const opt = mk("option", { value: val }, label);
+      fProvider.appendChild(opt);
+    }
+    const fId = mk("input", { type: "text", placeholder: "remote-ollama или agy-4", required: true });
+    const fUrl = mk("input", { type: "text", value: "http://10.0.0.50:11434", placeholder: "http://10.0.0.50:11434" });
+    const fWorkerUrl = mk("input", { type: "text", placeholder: "http://agy-4:9090" });
+    const fModel = mk("input", { type: "text", placeholder: "qwen3 (для ollama обязательно, для CLI опционально)" });
     const fTime = mk("input", { type: "number", value: 600, min: 1 });
     const fMax = mk("input", { type: "number", value: 4, min: 1 });
     const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
+
+    const baseField = wrap("Ollama Base URL", fUrl);
+    const workerField = wrap("Worker URL (http://service:9090)", fWorkerUrl);
+    const syncFields = () => {
+      const isOllama = fProvider.value === "ollama";
+      baseField.style.display = isOllama ? "" : "none";
+      workerField.style.display = isOllama ? "none" : "";
+      fUrl.required = isOllama;
+      fWorkerUrl.required = !isOllama;
+      fModel.required = isOllama;
+    };
+    fProvider.onchange = syncFields;
+    syncFields();
+
+    form.appendChild(wrap("Провайдер", fProvider));
     form.appendChild(wrap("ID модели в шлюзе", fId));
-    form.appendChild(wrap("Ollama Base URL", fUrl));
-    form.appendChild(wrap("Ollama имя модели", fModel));
+    form.appendChild(baseField);
+    form.appendChild(workerField);
+    form.appendChild(wrap("Имя модели провайдера", fModel));
     form.appendChild(wrap("Timeout (сек)", fTime));
     form.appendChild(wrap("Max Concurrent", fMax));
     form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Добавить"));
     form.onsubmit = async (e) => {
       e.preventDefault();
+      const provider = fProvider.value;
+      const payload = {
+        id: fId.value.trim(),
+        provider,
+        model: fModel.value.trim(),
+        timeout_seconds: parseInt(fTime.value, 10),
+        max_concurrent: parseInt(fMax.value, 10)
+      };
+      if (provider === "ollama") {
+        payload.base_url = fUrl.value.trim();
+      } else {
+        payload.worker_url = fWorkerUrl.value.trim();
+      }
       try {
-        await api("/models", {
-          method: "POST",
-          json: {
-            id: fId.value.trim(),
-            provider: "ollama",
-            base_url: fUrl.value.trim(),
-            model: fModel.value.trim(),
-            timeout_seconds: parseInt(fTime.value, 10),
-            max_concurrent: parseInt(fMax.value, 10)
-          }
-        });
+        await api("/models", { method: "POST", json: payload });
         closeModal();
         showToast(`Модель ${fId.value.trim()} добавлена`);
         loadModels();
         loadStatus();
       } catch (err) { showToast(err.message, true); }
     };
-    openModal("Добавить локальную Ollama-модель", form);
+    openModal("Добавить модель (Ollama / Worker)", form);
   };
 
   // RUNS

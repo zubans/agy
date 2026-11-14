@@ -1,269 +1,194 @@
-# CLI AI Gateway — Руководство по эксплуатации и Web-админке
+# CLI AI Gateway — Развёртывание в Docker с нуля, пул воркеров (`N` агентов) и Web-админка
 
-Практическая инструкция по настройке, запуску, остановке, перезапуску, диагностике и управлению шлюзом **CLI AI Gateway** через консоль и встроенную Web-админку (`/admin/`).
-
----
-
-## 1. Архитектура и ключевые пути
-
-Шлюз собирается в **единый статический бинарный файл** (`bin/cli-ai-gateway`) без внешних сервисов-брокеров:
-- **OpenAI-совместимый API** (`/v1/*`): `GET /v1/models`, `GET /v1/executors`, `POST/GET/DELETE /v1/files`, `POST /v1/responses`, `POST /v1/chat/completions`.
-- **Healthcheck / Readiness**: `GET /health` (liveness) и `GET /ready` (доступность SQLite, директорий хранения и проверка CLI-исполнителей).
-- **Встроенная Web-админка** (`/admin/` и `/admin/api/*`): одностраничное приложение, вшитое в бинарник через `go:embed`.
-- **Хранилище** (`storage.path`, по умолчанию `./data` или `/var/lib/cli-gateway/data`):
-  - `gateway.db` — SQLite WAL-база метаданных (API-ключи, модели, файлы, сессии, запуски, `model_overrides`);
-  - `files/` — загруженные файлы для промптов;
-  - `sessions/<session_id>/` — `context.md` с историей диалога;
-  - `runs/<run_id>/input/` — изолированные рабочие директории каждого запуска CLI.
+Практическая инструкция по развёртыванию **CLI AI Gateway** на чистом сервере (Ubuntu / Linux / macOS) с произвольным числом изолированных контейнеров под каждого CLI-агента (`claude-*`, `codex-*`, `gemini-*`, `agy-*`), подключению удалённого Ollama, авторизации и управлению через Web-админку (`/admin/`).
 
 ---
 
-## 2. Подготовка конфигурации
+## 1. Архитектура: контейнер на каждый аккаунт / модель
 
-Скопируйте эталонный конфиг и настройте секреты перед первым запуском:
+Ни один CLI-клиент не ставится на хост. Для **каждого экземпляра** любого агента поднимается свой Docker-контейнер и свой persistent volume:
 
-```bash
-cp configs/config.example.yaml config.yaml
+```text
+Client -> POST /v1/responses -> gateway (8080, бинарников CLI нет)
+                                  |-- http://claude-1:9090 -> claude-1 (claude + volume claude_1_home)
+                                  |-- http://claude-2:9090 -> claude-2 (claude + volume claude_2_home)
+                                  |-- http://codex-1:9090  -> codex-1  (codex  + volume codex_1_home)
+                                  |-- http://codex-2:9090  -> codex-2  (codex  + volume codex_2_home)
+                                  |-- http://agy-1:9090    -> agy-1    (agy    + volume agy_1_home)
+                                  |-- ... (любое число agy-N / codex-N / claude-N / gemini-N)
+                                  `-- http://<ip>:11434    -> удалённый Ollama-сервер
 ```
 
-Минимально что нужно изменить в `config.yaml`:
+Как это работает под капотом:
+- **`docker.sock` не монтируется**: `gateway` общается с воркерами по HTTP (`-worker` на `:9090`, токен `GATEWAY_WORKER_TOKEN`, пакет `internal/worker`).
+- **Нет жёсткого лимита на количество контейнеров**: скрипт [scripts/workers.sh](../scripts/workers.sh) хранит список контейнеров в `.workers` и генерирует `compose.workers.yaml` и `workers.models.yaml` (читается шлюзом через `GATEWAY_WORKERS_CONFIG`, поверх [configs/config.docker.yaml](../configs/config.docker.yaml)).
+- **Изоляция и безопасность**: read-only rootfs, `uid 10001`, `cap_drop: [ALL]`, `no-new-privileges:true`, отдельный volume под `HOME` каждого контейнера.
 
-1. **API-ключи клиентов** (`auth.keys`) — выдайте рабочие ключи или их SHA-256 хэши (`key_sha256`).
-2. **Пароль Web-админки** (`admin`):
-   ```yaml
-   admin:
-     enabled: true
-     token: "сгенерированный-длинный-секрет"
-     # Либо безопаснее через SHA-256 (64 hex-символа):
-     # token_sha256: "..."
+---
+
+## 2. Развёртывание на чистом Ubuntu-сервере с нуля
+
+### Шаг 1. Базовые пакеты на хост
+
+```bash
+sudo apt-get update && sudo apt-get install -y ca-certificates curl git make
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"
+# Перезайдите в SSH-сессию, чтобы применилась группа docker
+```
+
+### Шаг 2. Инициализация `.env` и стартового пула контейнеров
+
+```bash
+git clone <URL-репозитория> agy && cd agy
+
+# Вариант A: стандартный набор (1 claude, 1 codex, 1 gemini, 3 agy):
+make init
+
+# Вариант B: сразу задать нужное количество каждого CLI (например 2 клода, 3 кодекса, 6 аги):
+make init CLAUDE_COUNT=2 CODEX_COUNT=3 GEMINI_COUNT=1 AGY_COUNT=6
+```
+
+`make init` создаёт:
+- `.env` со сгенерированными случайными секретами (`GATEWAY_API_KEY`, `GATEWAY_ADMIN_TOKEN`, `GATEWAY_WORKER_TOKEN`) и `COMPOSE_FILE=compose.yaml:compose.workers.yaml`;
+- `.workers`, `compose.workers.yaml` и `workers.models.yaml` (все 4 файла в `.gitignore`, не загрязняют репозиторий).
+
+### Шаг 3. Удалённый сервер Ollama (опционально)
+
+Если Ollama запущен на другом сервере (например `10.0.0.50`):
+1. На сервере с Ollama разрешите внешние подключения (`OLLAMA_HOST=0.0.0.0:11434`, порт `11434`).
+2. Добавьте в `.env`:
+   ```env
+   GATEWAY_OLLAMA_BASE_URL=http://10.0.0.50:11434
+   GATEWAY_OLLAMA_MODEL=qwen3
    ```
-   > **Важно**: Не используйте дефолтные `gw-dev-change-me` и `gw-admin-change-me` вне локальной разработки. Секретный токен можно также передать через переменную окружения `GATEWAY_ADMIN_TOKEN`.
-3. **Модели и изолированные `home_dir`** (`models`) — укажите пути к бинарникам CLI или используйте встроенный `auto` (`codex`, `agy`, `gemini`, `claude`) и `ollama`.
+   При наличии `GATEWAY_OLLAMA_BASE_URL` модель `remote-ollama` включается автоматически. Несколько разных серверов/моделей Ollama можно добавить в любой момент через Web-админку (`/admin/` -> `+ Добавить модель`).
 
-Основные переменные окружения:
+### Шаг 4. Сборка и запуск
+
+```bash
+make up
+make ps
+make agent-ls
+```
+
+---
+
+## 3. Масштабирование: добавить или удалить контейнеры (`make agent-add` / `agent-rm`)
+
+Добавить новые контейнеры можно в любой момент без правки YAML руками:
+
+```bash
+# Авто-нумерация следующего свободного слота:
+make agent-add TYPE=agy                   # создаст agy-4 (затем agy-5, agy-6...)
+make agent-add TYPE=agy COUNT=3           # создаст сразу 3 новых agy-контейнера
+make agent-add TYPE=codex                 # создаст codex-2 (затем codex-3...)
+make agent-add TYPE=claude                # создаст claude-2 (затем claude-3...)
+make agent-add TYPE=gemini COUNT=2        # создаст gemini-2, gemini-3
+
+# Произвольное имя или номер слота:
+make agent-add TYPE=claude NAME=claude-work
+make agent-add TYPE=codex SLOT=10         # создаст codex-10
+```
+
+Что делает `make agent-add`:
+1. Добавляет строки в `.workers`, пересобирает `compose.workers.yaml` и `workers.models.yaml`.
+2. Поднимает новые контейнеры через `docker compose up -d --build`.
+3. Если `gateway` уже запущен — регистрирует новые модели сразу через `/admin/api/models` **без рестарта `gateway`**.
+
+Удаление контейнера:
+
+```bash
+make agent-rm NAME=agy-5                  # удалит контейнер, volume agy_5_home сохранит
+make agent-rm NAME=agy-5 PURGE_VOLUME=1   # удалит контейнер вместе с auth-томом
+```
+
+---
+
+## 4. Авторизация агентов в контейнерах (`make *-login`)
+
+Для каждого клиента есть единая `make`-команда с параметром `ACCOUNT=1|2|...` (по умолчанию `1`) или явным именем `NAME=...`:
+
+```bash
+# Claude Code CLI:
+make claude-login                  # вход в claude-1
+make claude-login ACCOUNT=2        # вход в claude-2
+make claude-login NAME=claude-work # вход в произвольный контейнер claude-work
+
+# Codex CLI (device auth без браузера):
+make codex-login                   # вход в codex-1
+make codex-login ACCOUNT=2         # вход в codex-2
+make codex-login ACCOUNT=3         # вход в codex-3
+
+# Gemini CLI:
+make gemini-login                  # вход в gemini-1
+make gemini-login ACCOUNT=2        # вход в gemini-2
+
+# Antigravity CLI (agy):
+make agy-login ACCOUNT=1           # вход в agy-1
+make agy-login ACCOUNT=4           # вход в agy-4
+make agy-login ACCOUNT=5           # вход в agy-5
+
+# Универсальная команда для любого контейнера:
+make agent-login NAME=codex-2
+```
+
+Проверка готовности всех контейнеров:
+
+```bash
+curl -s http://127.0.0.1:8080/ready
+```
+
+---
+
+## 5. Повседневное управление, логи и рестарт
+
+```bash
+make agent-ls                # таблица всех worker-контейнеров, worker_url и volume
+make ps                      # статус Docker-контейнеров и healthcheck
+make logs                    # логи gateway
+make logs SERVICE=codex-2    # логи конкретного контейнера
+make restart SERVICE=agy-4   # перезапуск одного воркера
+make down                    # остановка (авторизации в volumes сохраняются)
+make up                      # повторный запуск / обновление
+```
+
+---
+
+## 6. Переменные окружения
 
 | Переменная | Назначение |
 | --- | --- |
-| `GATEWAY_CONFIG` | Путь к YAML-конфигу |
-| `GATEWAY_LISTEN` | Адрес и порт (по умолчанию `127.0.0.1:8080`) |
-| `GATEWAY_STORAGE_PATH` | Каталог SQLite и рабочих директорий |
-| `GATEWAY_SQLITE_PATH` | Явный путь к файлу `gateway.db` |
+| `COMPOSE_FILE` | В `.env`: `compose.yaml:compose.workers.yaml` |
+| `CLAUDE_COUNT` / `CODEX_COUNT` / `GEMINI_COUNT` / `AGY_COUNT` | Стартовое число контейнеров при `make init` (по умолчанию `1/1/1/3`) |
+| `GATEWAY_BIND_HOST` / `GATEWAY_PORT` | Host IP и порт публикации `gateway` (по умолчанию `127.0.0.1:8080`) |
+| `GATEWAY_API_KEY` | Переопределяет клиентский Bearer-ключ для `/v1/*` |
+| `GATEWAY_ADMIN_TOKEN` | Токен входа в Web-админку `/admin/` |
+| `GATEWAY_WORKER_TOKEN` | Общий Bearer-токен между `gateway` и всеми воркерами (`:9090`) |
+| `GATEWAY_OLLAMA_BASE_URL` / `GATEWAY_OLLAMA_MODEL` | Адрес и модель удалённого Ollama (включает `remote-ollama` автоматически) |
+| `GATEWAY_WORKERS_CONFIG` | Автоматически задаётся `compose.workers.yaml` (`/etc/cli-ai-gateway/workers.yaml`) |
 | `GATEWAY_LOG_LEVEL` | `debug`, `info`, `warn`, `error` |
-| `GATEWAY_DIAGNOSTIC_LOG` | `true` включает подробный аудит без утечки промптов/ключей |
-| `GATEWAY_ADMIN_ENABLED` | `true`/`false` — включить или отключить Web-админку |
-| `GATEWAY_ADMIN_TOKEN` | Токен администратора для `/admin/` |
 
 ---
 
-## 3. Предварительная авторизация CLI
+## 7. Встроенная Web-админка (`/admin/`) и API
 
-Шлюз не перехватывает OAuth-токены. Перед использованием каждой модели выполните вход в CLI под сервисным пользователем или с тем же `HOME` (`home_dir` из `config.yaml`):
+Откройте `http://127.0.0.1:8080/admin/` (либо через SSH-туннель `ssh -L 8080:127.0.0.1:8080 user@server`) и войдите по `GATEWAY_ADMIN_TOKEN` из `.env`:
+- **Модели, воркеры и Ollama**: просмотр статуса готовности каждого `claude-*`, `codex-*`, `gemini-*`, `agy-*` и `remote-ollama`, отключение/включение, настройка `timeout_seconds`, `max_concurrent`, `worker_url` / `base_url`, динамическое добавление удалённых Ollama и внешних воркеров (`model_overrides` в SQLite).
+- **Запуски, сессии, файлы, API-ключи и песочница SSE**: отмена зависших запусков (завершает `PGID` процесса внутри воркера), управление клиентскими ключами, проверка потокового ответа в Playground.
 
-```bash
-# Codex CLI
-CODEX_HOME=/var/lib/cli-gateway/homes/codex HOME=/var/lib/cli-gateway/homes/codex codex login
-
-# Antigravity CLI
-HOME=/var/lib/cli-gateway/homes/antigravity agy
-
-# Gemini CLI
-HOME=/var/lib/cli-gateway/homes/gemini gemini
-
-# Claude CLI
-HOME=/var/lib/cli-gateway/homes/claude claude auth login
-
-# Ollama (локальный сервер)
-ollama serve
-ollama pull qwen3
-```
-
----
-
-## 4. Запуск, проверка, рестарт и остановка
-
-### Вариант A: Локальный демон (`scripts/gateway.sh` и `Makefile`)
-
-Скрипт [scripts/gateway.sh](../scripts/gateway.sh) управляет фоновым процессом через PID-файл (`data/gateway.pid`) и пишет логи в `data/gateway.log`. По умолчанию используется `./config.yaml`, а при его отсутствии — `./configs/config.example.yaml`.
+Пример вызова конкретного воркера через `/v1/responses`:
 
 ```bash
-# Сборка бинарников
-make build
-
-# Запуск в фоне с ожиданием прохождения /health
-make start
-# или напрямую:
-./scripts/gateway.sh start
-
-# Проверка статуса, PID, /health и /ready
-make status
-./scripts/gateway.sh status
-./scripts/gateway.sh ready
-
-# Просмотр логов в реальном времени (или последние 100 строк без ожидания)
-make logs
-./scripts/gateway.sh logs --no-follow
-
-# Плавный перезапуск (пересборка + SIGTERM + новый старт)
-make restart
-./scripts/gateway.sh restart
-
-# Плавная остановка (SIGTERM с ожиданием до 12 сек, закрытие SQLite WAL и дочерних процессов)
-make stop
-./scripts/gateway.sh stop
-```
-
-Для запуска с нестандартным конфигом используйте переменные окружения:
-
-```bash
-GATEWAY_CONFIG=/path/to/prod.yaml GATEWAY_PID_FILE=/tmp/gw.pid GATEWAY_LOG_FILE=/tmp/gw.log ./scripts/gateway.sh start
-```
-
-### Вариант B: Systemd (Linux / Ubuntu Server)
-
-Unit-файл находится в [deployments/cli-ai-gateway.service](../deployments/cli-ai-gateway.service).
-
-```bash
-# Запуск и добавление в автозагрузку
-sudo systemctl enable --now cli-ai-gateway
-
-# Перезапуск после обновления бинарника или config.yaml
-sudo systemctl restart cli-ai-gateway
-
-# Остановка
-sudo systemctl stop cli-ai-gateway
-
-# Статус и последние ошибки
-sudo systemctl status cli-ai-gateway
-
-# Просмотр логов
-sudo journalctl -u cli-ai-gateway -f
-```
-
-### Вариант C: Docker Compose
-
-Конфигурация описана в [compose.yaml](../compose.yaml).
-
-```bash
-# Сборка и запуск в фоне
-make docker-up
-# или: docker compose up -d --build
-
-# Статус контейнера и healthcheck
-docker compose ps
-
-# Логи
-make docker-logs
-# или: docker compose logs -f gateway
-
-# Перезапуск контейнера
-make docker-restart
-# или: docker compose restart gateway
-
-# Остановка и удаление контейнера (volumes сохраняются)
-make docker-down
-# или: docker compose down
-
-# Логин CLI внутри уже запущенного контейнера
-docker compose exec -it gateway env HOME=/var/lib/cli-gateway/homes/codex codex login
-```
-
----
-
-## 5. Работа с API и клиентом
-
-### Быстрая проверка через `curl`
-
-Полный сквозной сценарий лежит в [examples/curl.sh](../examples/curl.sh). Базовые вызовы:
-
-```bash
-# 1. Список активных моделей
-curl -s http://127.0.0.1:8080/v1/models \
-  -H "Authorization: Bearer gw-dev-change-me"
-
-# 2. Проверка возможностей CLI-исполнителей
-curl -s http://127.0.0.1:8080/v1/executors \
-  -H "Authorization: Bearer gw-dev-change-me"
-
-# 3. Загрузка prompt.md (или кодового файла) и запуск /v1/responses
-curl -s -F purpose=user_data -F file=@README.md http://127.0.0.1:8080/v1/files \
-  -H "Authorization: Bearer gw-dev-change-me"
-
-# 4. Синхронный запрос (Responses API)
-curl -s http://127.0.0.1:8080/v1/responses \
-  -H "Authorization: Bearer gw-dev-change-me" \
+set -a && . ./.env && set +a
+curl -s http://127.0.0.1:${GATEWAY_PORT:-8080}/v1/responses \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"codex","input":"Сделай краткое ревью архитектуры проекта"}'
-```
-
-### Go-клиент
-
-```bash
-go run ./cmd/example-client -url http://127.0.0.1:8080 -key gw-dev-change-me -model codex
+  -d '{"model":"codex-2","input":"Проверь контейнер codex-2"}'
 ```
 
 ---
 
-## 6. Встроенная Web-админка (`/admin/`)
+## 8. Локальный запуск бинарника (для разработки)
 
-Откройте в браузере `http://127.0.0.1:8080/admin/`.
-
-### 6.1 Безопасность и авторизация
-
-- **Отдельный контур аутентификации**: клиентские API-ключи `/v1/*` не подходят для `/admin/*`. Используется только `admin.token` (`token_sha256` или `GATEWAY_ADMIN_TOKEN`).
-- **Сессия в браузере**: `POST /admin/api/login` устанавливает подписанную эфемерным HMAC-SHA256 ключом cookie `agy_admin_session` с флагами `HttpOnly; SameSite=Strict`.
-- **Защита от CSRF**: все изменяющие запросы (`POST`, `PATCH`, `PUT`, `DELETE`) при работе через cookie требуют заголовок `X-Admin-UI: 1` (UI отправляет его автоматически).
-- **Доступ по скрипту/CLI**: любой `/admin/api/*` маршрут принимает и `Authorization: Bearer <ADMIN_TOKEN>`.
-- **Anti-RCE**: через Web-админку нельзя подменять пути к CLI-бинарникам (`executable`), а динамическое добавление новых моделей разрешено только для локальных HTTP-моделей `provider: ollama`.
-
-### 6.2 Возможности вкладок админки
-
-1. **Модели и CLI**
-   - Просмотр всех моделей (включая выключенные в `config.yaml`), статусов `Ready / Unavailable` и диагностических сообщений.
-   - Включение/отключение модели без перезапуска сервера, настройка `timeout_seconds`, `max_concurrent`, `model` (целевая модель Ollama) и `base_url` (изменения сохраняются в SQLite-таблице `model_overrides` и переживают перезапуск).
-   - Кнопка **Проверить CLI** (`POST /admin/api/models/{id}/check`) для мгновенной перепроверки исполнителя после `codex login` или запуска Ollama.
-   - Добавление и удаление динамических моделей **Ollama** (`POST /admin/api/models`, `DELETE /admin/api/models/{id}`).
-2. **Запуски и процессы**
-   - Мониторинг активных процессов (`live_active`), статуса (`queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`), объёма входных байт и длительности.
-   - Детальная карточка запуска (метаданные запуска, коды ошибок, фрагменты `result.json` и `events.jsonl`).
-   - Принудительная остановка зависшего выполнения кнопкой **Прервать** (`POST /admin/api/runs/{id}/cancel`): отменяет контекст и завершает всю группу процессов (`PGID`).
-3. **Сессии**
-   - Список диалогов (`gateway_session_id`), их владельцев, привязанных моделей, количества ходов (`turn_count`), `last_response_id` и `provider_session_id`.
-   - Просмотр истории шагов (`history.jsonl`) и списка связанных запусков (`runs`).
-   - Удаление неактивных сессий вместе с файлами на диске (`DELETE /admin/api/sessions/{id}`).
-4. **Файлы**
-   - Просмотр загруженных файлов (`file_id`, `owner_id`, размер, `active_refs`, срок истечения TTL).
-   - Прямая загрузка файла из браузера, чтение содержимого текстовых/Markdown файлов (до 2 МиБ) и удаление неактивных файлов (`active_refs == 0`).
-5. **API-ключи**
-   - Выпуск нового ключа (`gw-...`; секрет показывается 1 раз сразу после создания, в БД хранится только SHA-256).
-   - Настройка `allowed_models` (`*` или список моделей через запятую) и персонального лимита параллельных процессов `max_concurrent`.
-   - Мгновенный отзыв (`Revoke`), восстановление (`Unrevoke`) и удаление ключей.
-6. **Песочница (SSE)**
-   - Интерактивный тест модели прямо из браузера в режиме стриминга `SSE` или синхронном режиме.
-   - Поддержка `instructions`, цепочки диалога (`previous_response_id`) и прикрепления уже загруженных `file_ids`.
-7. **Конфиг и обслуживание**
-   - Просмотр активной конфигурации (секретные поля маскируются как `[REDACTED]`), команды для оперативного управления и кнопка **TTL-очистка сейчас** (`POST /admin/api/cleanup`).
-
----
-
-## 7. Резервное копирование и диагностика неполадок
-
-### Резервное копирование SQLite
-
-Так как база работает в режиме `WAL`, не копируйте `gateway.db` обычным `cp` во время нагрузки без учёта WAL-файла. Безопасный онлайн-бэкап:
-
-```bash
-sqlite3 data/gateway.db ".backup '/backup/gateway-$(date +%F).db'"
-```
-
-### Типичные проблемы
-
-- **`executor_unavailable` / модель помечена `Unavailable` на `/ready`**
-  1. Убедитесь, что бинарник CLI находится в `PATH` или задан в `config.yaml`.
-  2. Выполните авторизацию CLI с тем же `home_dir` / `HOME`, под которым работает шлюз.
-  3. Нажмите **Проверить CLI** в Web-админке или перезапустите шлюз.
-- **Статус запуска `interrupted` после рестарта**
-  Это штатное восстановление при старте: предыдущий процесс шлюза завершился во время активного выполнения CLI, и при запуске БД автоматически перевела незавершённые `running` записи в `interrupted`, освободив ссылки на файлы (`active_refs`).
-- **429 `queue_limit_exceeded`**
-  Превышен лимит одновременных запусков (`limits.max_global_processes`, `max_concurrent` модели или `max_concurrent` ключа). Увеличьте лимиты через Web-админку (для моделей/ключей) или в `config.yaml`.
-- **401 на `/admin/api/*` или ошибка CSRF `missing_csrf_header`**
-  При обращении скриптами передавайте `Authorization: Bearer <ADMIN_TOKEN>`. Браузерные запросы с cookie обязаны нести `X-Admin-UI: 1`.
+Цели для локальной разработки без Docker сохранены под префиксом `local-*`: `make build`, `make local-start`, `make local-status`, `make local-logs`, `make local-restart`, `make local-stop` ([scripts/gateway.sh](../scripts/gateway.sh), [deployments/cli-ai-gateway.service](../deployments/cli-ai-gateway.service)).
