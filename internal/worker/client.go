@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -110,6 +111,41 @@ func (e *RemoteExecutor) Check(ctx context.Context) error {
 		return fmt.Errorf("worker %s reported not ready", e.baseURL)
 	}
 	return nil
+}
+
+// ListModels queries GET /worker/models on the remote worker container.
+func (e *RemoteExecutor) ListModels(ctx context.Context) ([]executor.ModelDescriptor, string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, e.baseURL+ModelsPath, nil)
+	if err != nil {
+		return nil, "worker", err
+	}
+	if e.token != "" {
+		req.Header.Set("Authorization", "Bearer "+e.token)
+	}
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, "worker", fmt.Errorf("worker unreachable at %s: %w", e.baseURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, "worker", fmt.Errorf("worker /worker/models HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var decoded ModelsResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 512*1024)).Decode(&decoded); err != nil {
+		return nil, "worker", fmt.Errorf("decode worker models JSON: %w", err)
+	}
+	var warnErr error
+	if strings.TrimSpace(decoded.Warning) != "" {
+		warnErr = errors.New(decoded.Warning)
+	}
+	return decoded.Models, decoded.Source, warnErr
 }
 
 func (e *RemoteExecutor) Execute(ctx context.Context, req executor.ExecuteRequest, emit executor.EventHandler) (executor.ExecuteResult, error) {
@@ -316,10 +352,12 @@ func decodeDoneFrame(frame StreamFrame) (executor.ExecuteResult, error) {
 	}
 	if frame.Result.Error != nil {
 		res.Error = &executor.ExecError{
-			Kind:     frame.Result.Error.Kind,
-			Code:     frame.Result.Error.Code,
-			Message:  frame.Result.Error.Message,
-			ExitCode: frame.Result.Error.ExitCode,
+			Kind:              frame.Result.Error.Kind,
+			Code:              frame.Result.Error.Code,
+			Message:           frame.Result.Error.Message,
+			ExitCode:          frame.Result.Error.ExitCode,
+			RetryAfterSeconds: frame.Result.Error.RetryAfterSeconds,
+			CooldownSource:    frame.Result.Error.CooldownSource,
 		}
 		return res, res.Error
 	}
@@ -358,6 +396,9 @@ func mapHTTPError(resp *http.Response) (executor.ExecuteResult, error) {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		kind = executor.ErrAuth
 		code = "worker_auth_failed"
+	case http.StatusTooManyRequests:
+		kind = executor.ErrRateLimit
+		code = "worker_rate_limited"
 	case http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout:
 		kind = executor.ErrUnavailable
 		code = "worker_unavailable"
@@ -367,6 +408,12 @@ func mapHTTPError(resp *http.Response) (executor.ExecuteResult, error) {
 		Code:     code,
 		Message:  msg,
 		ExitCode: -1,
+	}
+	if kind == executor.ErrRateLimit {
+		if d, src := executor.ParseCooldown(msg, resp.Header, 0); d > 0 && src == "parsed" {
+			execErr.RetryAfterSeconds = int64(math.Ceil(d.Seconds()))
+			execErr.CooldownSource = src
+		}
 	}
 	return executor.ExecuteResult{Status: "failed", ExitCode: -1, Error: execErr}, execErr
 }

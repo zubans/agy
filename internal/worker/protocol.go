@@ -18,6 +18,8 @@ const (
 	LivezPath = "/livez"
 	// HealthPath probes worker authentication and CLI binary readiness.
 	HealthPath = "/worker/health"
+	// ModelsPath enumerates selectable sub-models discovered inside a worker container.
+	ModelsPath = "/worker/models"
 	// ExecutePath streams task execution and staged workspace files to a worker container.
 	ExecutePath = "/worker/execute"
 )
@@ -29,6 +31,14 @@ type HealthResponse struct {
 	Executable   string                `json:"executable,omitempty"`
 	Error        string                `json:"error,omitempty"`
 	Capabilities executor.Capabilities `json:"capabilities"`
+}
+
+// ModelsResponse is returned by GET /worker/models.
+type ModelsResponse struct {
+	Provider string                     `json:"provider"`
+	Source   string                     `json:"source,omitempty"`
+	Warning  string                     `json:"warning,omitempty"`
+	Models   []executor.ModelDescriptor `json:"models"`
 }
 
 // FileMeta describes one staged input file uploaded alongside a worker execute request.
@@ -65,10 +75,12 @@ type ExecuteMeta struct {
 
 // ErrorPayload serializes executor.ExecError across HTTP boundaries.
 type ErrorPayload struct {
-	Kind     executor.ErrorKind `json:"kind"`
-	Code     string             `json:"code"`
-	Message  string             `json:"message"`
-	ExitCode int                `json:"exit_code"`
+	Kind              executor.ErrorKind `json:"kind"`
+	Code              string             `json:"code"`
+	Message           string             `json:"message"`
+	ExitCode          int                `json:"exit_code"`
+	RetryAfterSeconds int64              `json:"retry_after_seconds,omitempty"`
+	CooldownSource    string             `json:"cooldown_source,omitempty"`
 }
 
 // ResultPayload serializes executor.ExecuteResult in the terminal NDJSON frame.

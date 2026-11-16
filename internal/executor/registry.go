@@ -82,19 +82,51 @@ func (r *Registry) RegisterModels(models []config.ModelConfig) error {
 	return nil
 }
 
-// Get returns the enabled configured ModelInfo by model ID.
+// Get returns the enabled and publicly exposed standalone ModelInfo by model ID.
 func (r *Registry) Get(modelID string) (ModelInfo, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	info, ok := r.models[modelID]
+	if !ok || !info.Config.EffectiveEnabled() || !info.Config.EffectivePublic() {
+		return ModelInfo{}, false
+	}
+	return info, true
+}
+
+// GetProvider returns any enabled backend provider/worker by ID regardless of public catalog visibility.
+func (r *Registry) GetProvider(providerID string) (ModelInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	info, ok := r.models[providerID]
 	if !ok || !info.Config.EffectiveEnabled() {
 		return ModelInfo{}, false
 	}
 	return info, true
 }
 
-// List returns all enabled models in deterministic registration order.
+// GetAny returns any registered backend provider (enabled or disabled) by ID.
+func (r *Registry) GetAny(providerID string) (ModelInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	info, ok := r.models[providerID]
+	return info, ok
+}
+
+// List returns all enabled, publicly visible standalone models in deterministic registration order.
 func (r *Registry) List() []ModelInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]ModelInfo, 0, len(r.order))
+	for _, id := range r.order {
+		if info, ok := r.models[id]; ok && info.Config.EffectiveEnabled() && info.Config.EffectivePublic() {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
+// ListProviders returns all enabled backend providers/workers (including hidden ones with public=false).
+func (r *Registry) ListProviders() []ModelInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]ModelInfo, 0, len(r.order))
@@ -104,6 +136,23 @@ func (r *Registry) List() []ModelInfo {
 		}
 	}
 	return out
+}
+
+// DiscoverModels queries a configured backend provider for its available selectable sub-models.
+func (r *Registry) DiscoverModels(ctx context.Context, providerID string) ([]ModelDescriptor, string, error) {
+	r.mu.RLock()
+	info, ok := r.models[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, "", ErrModelNotFound
+	}
+	if lister, ok := info.Executor.(ModelLister); ok {
+		return lister.ListModels(ctx)
+	}
+	if strings.TrimSpace(info.Config.Model) != "" {
+		return []ModelDescriptor{{ID: info.Config.Model, Name: info.Config.Model, Default: true}}, "configured", nil
+	}
+	return nil, "unsupported", nil
 }
 
 // ListAll returns all registered models (including disabled ones) in deterministic order.
@@ -142,6 +191,7 @@ func (r *Registry) CheckOne(ctx context.Context, modelID string) (ExecutorStatus
 // ModelPatch describes safe runtime changes permitted via Web Admin without mutating local CLI binary paths.
 type ModelPatch struct {
 	Enabled        *bool
+	Public         *bool
 	TimeoutSeconds *int
 	MaxConcurrent  *int
 	Model          *string
@@ -155,7 +205,7 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, provider, base_url, worker_url, model, enabled, timeout_seconds, max_concurrent, dynamic
+		SELECT id, provider, base_url, worker_url, model, enabled, public, timeout_seconds, max_concurrent, dynamic
 		FROM model_overrides
 		WHERE deleted = 0
 		ORDER BY updated_at ASC
@@ -167,13 +217,13 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 
 	type rowData struct {
 		id, provider, baseURL, workerURL, model string
-		enabled, timeoutSec, maxConcur          sql.NullInt64
+		enabled, public, timeoutSec, maxConcur  sql.NullInt64
 		dynamic                                 int
 	}
 	var loaded []rowData
 	for rows.Next() {
 		var it rowData
-		if err := rows.Scan(&it.id, &it.provider, &it.baseURL, &it.workerURL, &it.model, &it.enabled, &it.timeoutSec, &it.maxConcur, &it.dynamic); err != nil {
+		if err := rows.Scan(&it.id, &it.provider, &it.baseURL, &it.workerURL, &it.model, &it.enabled, &it.public, &it.timeoutSec, &it.maxConcur, &it.dynamic); err != nil {
 			return err
 		}
 		loaded = append(loaded, it)
@@ -194,6 +244,11 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 			en := true
 			if it.enabled.Valid {
 				en = it.enabled.Int64 != 0
+			}
+			var pubPtr *bool
+			if it.public.Valid {
+				pub := it.public.Int64 != 0
+				pubPtr = &pub
 			}
 			timeout := 600
 			if it.timeoutSec.Valid && it.timeoutSec.Int64 > 0 {
@@ -218,6 +273,7 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 					MaxConcurrent:  maxC,
 					FSAccess:       "workspace-read",
 					Enabled:        &en,
+					Public:         pubPtr,
 				}
 			case "codex", "antigravity", "gemini", "claude":
 				if strings.TrimSpace(it.workerURL) == "" {
@@ -233,6 +289,7 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 					MaxConcurrent:  maxC,
 					FSAccess:       "workspace-read",
 					Enabled:        &en,
+					Public:         pubPtr,
 				}
 			default:
 				continue
@@ -247,6 +304,10 @@ func (r *Registry) ApplyOverrides(ctx context.Context, db *sql.DB) error {
 		if it.enabled.Valid {
 			en := it.enabled.Int64 != 0
 			cfg.Enabled = &en
+		}
+		if it.public.Valid {
+			pub := it.public.Int64 != 0
+			cfg.Public = &pub
 		}
 		if it.timeoutSec.Valid && it.timeoutSec.Int64 > 0 {
 			cfg.TimeoutSeconds = int(it.timeoutSec.Int64)
@@ -281,6 +342,10 @@ func (r *Registry) UpdateRuntimeModel(ctx context.Context, db *sql.DB, id string
 	if patch.Enabled != nil {
 		en := *patch.Enabled
 		cfg.Enabled = &en
+	}
+	if patch.Public != nil {
+		pub := *patch.Public
+		cfg.Public = &pub
 	}
 	if patch.TimeoutSeconds != nil {
 		if *patch.TimeoutSeconds < 1 || *patch.TimeoutSeconds > 86400 {
@@ -476,21 +541,26 @@ func persistModelOverride(ctx context.Context, db *sql.DB, cfg config.ModelConfi
 	if deleted {
 		delInt = 1
 	}
+	pubInt := 0
+	if cfg.EffectivePublic() {
+		pubInt = 1
+	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO model_overrides (id, provider, base_url, worker_url, model, enabled, timeout_seconds, max_concurrent, dynamic, deleted, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO model_overrides (id, provider, base_url, worker_url, model, enabled, public, timeout_seconds, max_concurrent, dynamic, deleted, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			provider = excluded.provider,
 			base_url = excluded.base_url,
 			worker_url = excluded.worker_url,
 			model = excluded.model,
 			enabled = excluded.enabled,
+			public = excluded.public,
 			timeout_seconds = excluded.timeout_seconds,
 			max_concurrent = excluded.max_concurrent,
 			dynamic = excluded.dynamic,
 			deleted = excluded.deleted,
 			updated_at = excluded.updated_at
-	`, cfg.ID, cfg.Provider, cfg.BaseURL, cfg.WorkerURL, cfg.Model, enInt, cfg.TimeoutSeconds, cfg.MaxConcurrent, dynInt, delInt, time.Now().Unix())
+	`, cfg.ID, cfg.Provider, cfg.BaseURL, cfg.WorkerURL, cfg.Model, enInt, pubInt, cfg.TimeoutSeconds, cfg.MaxConcurrent, dynInt, delInt, time.Now().Unix())
 	return err
 }
 
@@ -509,9 +579,9 @@ type ExecutorStatus struct {
 	Capabilities Capabilities `json:"capabilities"`
 }
 
-// CheckAll probes all registered executors independently so one broken CLI does not block others.
+// CheckAll probes all registered enabled backend executors independently so one broken CLI does not block others.
 func (r *Registry) CheckAll(ctx context.Context) ReadinessReport {
-	items := r.List()
+	items := r.ListProviders()
 	report := ReadinessReport{
 		TotalCount: len(items),
 		Executors:  make(map[string]ExecutorStatus, len(items)),

@@ -124,6 +124,7 @@ render_files() {
     timeout_seconds: 600
     max_concurrent: 4
     fs_access: workspace-read
+    public: false
 EOF
       done
     fi
@@ -269,7 +270,7 @@ register_live_if_running() {
   status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${url}/admin/api/models" \
     -H "Authorization: Bearer ${tok}" \
     -H "Content-Type: application/json" \
-    -d "{\"id\":\"${name}\",\"provider\":\"${prov}\",\"worker_url\":\"http://${name}:9090\"}" || true)
+    -d "{\"id\":\"${name}\",\"provider\":\"${prov}\",\"worker_url\":\"http://${name}:9090\",\"public\":false}" || true)
   if [ "$status" = "201" ]; then
     echo "Registered '${name}' in running gateway immediately (zero downtime)"
   elif [ "$status" = "409" ]; then

@@ -77,6 +77,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+LivezPath, s.handleLivez)
 	mux.HandleFunc("GET "+HealthPath, s.withAuth(s.handleHealth))
+	mux.HandleFunc("GET "+ModelsPath, s.withAuth(s.handleModels))
 	mux.HandleFunc("POST "+ExecutePath, s.withAuth(s.handleExecute))
 	s.handler = mux
 	return s, nil
@@ -147,6 +148,28 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		resp.Error = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	resp := ModelsResponse{
+		Provider: s.cfg.Provider,
+		Models:   []executor.ModelDescriptor{},
+	}
+	lister, ok := s.cfg.Executor.(executor.ModelLister)
+	if !ok {
+		resp.Source = "unsupported"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	models, source, err := lister.ListModels(r.Context())
+	resp.Source = source
+	if models != nil {
+		resp.Models = models
+	}
+	if err != nil {
+		resp.Warning = err.Error()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -381,19 +404,23 @@ func encodeDoneFrame(res executor.ExecuteResult, execErr error) StreamFrame {
 	}
 	if res.Error != nil {
 		payload.Error = &ErrorPayload{
-			Kind:     res.Error.Kind,
-			Code:     res.Error.Code,
-			Message:  res.Error.Message,
-			ExitCode: res.Error.ExitCode,
+			Kind:              res.Error.Kind,
+			Code:              res.Error.Code,
+			Message:           res.Error.Message,
+			ExitCode:          res.Error.ExitCode,
+			RetryAfterSeconds: res.Error.RetryAfterSeconds,
+			CooldownSource:    res.Error.CooldownSource,
 		}
 	} else if execErr != nil {
 		var ee *executor.ExecError
 		if errors.As(execErr, &ee) && ee != nil {
 			payload.Error = &ErrorPayload{
-				Kind:     ee.Kind,
-				Code:     ee.Code,
-				Message:  ee.Message,
-				ExitCode: ee.ExitCode,
+				Kind:              ee.Kind,
+				Code:              ee.Code,
+				Message:           ee.Message,
+				ExitCode:          ee.ExitCode,
+				RetryAfterSeconds: ee.RetryAfterSeconds,
+				CooldownSource:    ee.CooldownSource,
 			}
 		} else {
 			return StreamFrame{

@@ -22,6 +22,7 @@ import (
 	"cli-ai-gateway/internal/auth"
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
+	"cli-ai-gateway/internal/pools"
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
@@ -60,6 +61,7 @@ type Dependencies struct {
 	Files      *storage.FileStore
 	Sessions   *session.Manager
 	Registry   *executor.Registry
+	Pools      *pools.Store
 	ProcMgr    *process.Manager
 	Playground PlaygroundRunner
 }
@@ -107,6 +109,20 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/models/{model_id}/check", h.requireAdmin(h.handleCheckOneModel))
 	mux.HandleFunc("PATCH /admin/api/models/{model_id}", h.requireAdmin(h.handlePatchModel))
 	mux.HandleFunc("DELETE /admin/api/models/{model_id}", h.requireAdmin(h.handleDeleteModel))
+
+	mux.HandleFunc("GET /admin/api/providers", h.requireAdmin(h.handleListProviders))
+	mux.HandleFunc("GET /admin/api/providers/{provider_id}/models", h.requireAdmin(h.handleDiscoverProviderModels))
+	mux.HandleFunc("POST /admin/api/providers/{provider_id}/models", h.requireAdmin(h.handleAddCustomProviderModel))
+	mux.HandleFunc("POST /admin/api/providers/{provider_id}/publish", h.requireAdmin(h.handlePublishProviderModels))
+
+	mux.HandleFunc("GET /admin/api/catalog", h.requireAdmin(h.handleListCatalog))
+	mux.HandleFunc("POST /admin/api/catalog", h.requireAdmin(h.handleCreateCatalogModel))
+	mux.HandleFunc("PUT /admin/api/catalog/{model_id}", h.requireAdmin(h.handleUpdateCatalogModel))
+	mux.HandleFunc("PATCH /admin/api/catalog/{model_id}", h.requireAdmin(h.handlePatchCatalogModel))
+	mux.HandleFunc("DELETE /admin/api/catalog/{model_id}", h.requireAdmin(h.handleDeleteCatalogModel))
+
+	mux.HandleFunc("GET /admin/api/cooldowns", h.requireAdmin(h.handleListCooldowns))
+	mux.HandleFunc("POST /admin/api/cooldowns/release", h.requireAdmin(h.handleReleaseCooldown))
 
 	mux.HandleFunc("GET /admin/api/keys", h.requireAdmin(h.handleListKeys))
 	mux.HandleFunc("POST /admin/api/keys", h.requireAdmin(h.handleCreateKey))
@@ -280,6 +296,16 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		statusStr = "degraded"
 	}
 
+	var activeCooldowns, publishedModelsCount int
+	if h.deps.Pools != nil {
+		if cds, err := h.deps.Pools.ListCooldowns(ctx); err == nil {
+			activeCooldowns = len(cds)
+		}
+		if pms, err := h.deps.Pools.ListPublishedModels(ctx, false); err == nil {
+			publishedModelsCount = len(pms)
+		}
+	}
+
 	writeAdminJSON(w, http.StatusOK, map[string]any{
 		"status":         statusStr,
 		"started_at":     h.deps.StartedAt.Unix(),
@@ -300,12 +326,14 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"file_count":     totalFiles,
 		},
 		"counts": map[string]any{
-			"active_runs":  activeRuns,
-			"total_runs":   totalRuns,
-			"sessions":     totalSessions,
-			"active_keys":  activeKeys,
-			"ready_models": report.ReadyCount,
-			"total_models": len(h.deps.Registry.ListAll()),
+			"active_runs":      activeRuns,
+			"total_runs":       totalRuns,
+			"sessions":         totalSessions,
+			"active_keys":      activeKeys,
+			"ready_models":     report.ReadyCount,
+			"total_models":     len(h.deps.Registry.ListAll()),
+			"published_models": publishedModelsCount,
+			"active_cooldowns": activeCooldowns,
 		},
 		"readiness": report,
 	})
@@ -379,6 +407,7 @@ type adminModelView struct {
 	SandboxMode    string                `json:"sandbox_mode,omitempty"`
 	FSAccess       string                `json:"fs_access,omitempty"`
 	Enabled        bool                  `json:"enabled"`
+	Public         bool                  `json:"public"`
 	Dynamic        bool                  `json:"dynamic"`
 	Ready          bool                  `json:"ready"`
 	Error          string                `json:"error,omitempty"`
@@ -398,6 +427,7 @@ func toAdminModelView(info executor.ModelInfo, st executor.ExecutorStatus) admin
 		SandboxMode:    info.Config.SandboxMode,
 		FSAccess:       info.Config.FSAccess,
 		Enabled:        info.Config.EffectiveEnabled(),
+		Public:         info.Config.EffectivePublic(),
 		Dynamic:        info.Dynamic,
 		Ready:          st.Ready,
 		Error:          st.Error,
@@ -426,6 +456,7 @@ func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds int    `json:"timeout_seconds"`
 		MaxConcurrent  int    `json:"max_concurrent"`
 		Enabled        *bool  `json:"enabled"`
+		Public         *bool  `json:"public"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 32*1024)).Decode(&body); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON body")
@@ -448,6 +479,7 @@ func (h *Handler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds: body.TimeoutSeconds,
 		MaxConcurrent:  body.MaxConcurrent,
 		Enabled:        body.Enabled,
+		Public:         body.Public,
 	})
 	if err != nil {
 		status := http.StatusBadRequest
@@ -501,6 +533,14 @@ func (h *Handler) handlePatchModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		patch.Enabled = &b
+	}
+	if v, ok := raw["public"]; ok {
+		var b bool
+		if err := json.Unmarshal(v, &b); err != nil {
+			writeAdminError(w, http.StatusBadRequest, "invalid_field", "public must be boolean")
+			return
+		}
+		patch.Public = &b
 	}
 	if v, ok := raw["timeout_seconds"]; ok {
 		var n int

@@ -22,6 +22,7 @@ import (
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
 	"cli-ai-gateway/internal/executor/defaults"
+	"cli-ai-gateway/internal/pools"
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
@@ -108,7 +109,59 @@ func summarizeTextMarkers(s string) string {
 	return fmt.Sprintf("len=%d start=%v mid=%v end=%v", len(s), hasStart, hasMid, hasEnd)
 }
 
+func mockRequestedModel(args []string) string {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if (arg == "-m" || arg == "--model") && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(arg, "--model=") {
+			return strings.TrimPrefix(arg, "--model=")
+		}
+	}
+	return ""
+}
+
+func maybeMockQuotaFail(args []string) {
+	path := strings.TrimSpace(os.Getenv("MOCK_QUOTA_FILE"))
+	if path == "" {
+		home := strings.TrimSpace(os.Getenv("HOME"))
+		if home == "" {
+			return
+		}
+		path = filepath.Join(home, ".mock_fail_quota")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	reqModel := mockRequestedModel(args)
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "model=") {
+			rest := strings.TrimPrefix(line, "model=")
+			parts := strings.SplitN(rest, "|", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			targetModel := strings.TrimSpace(parts[0])
+			msg := strings.TrimSpace(parts[1])
+			if targetModel == "*" || targetModel == reqModel {
+				fmt.Fprintln(os.Stderr, msg)
+				os.Exit(1)
+			}
+			continue
+		}
+		fmt.Fprintln(os.Stderr, line)
+		os.Exit(1)
+	}
+}
+
 func runMockCodex() {
+	maybeMockQuotaFail(os.Args[1:])
 	stdinBytes, _ := io.ReadAll(os.Stdin)
 	stdin := string(stdinBytes)
 	workDir, _ := os.Getwd()
@@ -181,6 +234,7 @@ func runMockCodex() {
 }
 
 func runMockClaude() {
+	maybeMockQuotaFail(os.Args[1:])
 	stdinBytes, _ := io.ReadAll(os.Stdin)
 	var in struct {
 		Message struct {
@@ -230,6 +284,13 @@ func runMockClaude() {
 }
 
 func runMockGemini() {
+	if len(os.Args) > 1 && os.Args[1] == "--list-models" {
+		fmt.Println("auto (Auto)")
+		fmt.Println("gemini-2.5-pro (gemini-2.5-pro)")
+		fmt.Println("gemini-2.5-flash (gemini-2.5-flash)")
+		os.Exit(0)
+	}
+	maybeMockQuotaFail(os.Args[1:])
 	workDir, _ := os.Getwd()
 	promptMD, contextMD, _ := readInputFiles(workDir)
 	joinedArgs := strings.Join(os.Args[1:], " ")
@@ -254,6 +315,13 @@ func runMockGemini() {
 }
 
 func runMockAgy() {
+	if len(os.Args) > 1 && os.Args[1] == "models" {
+		fmt.Println("Gemini 2.5 Pro (gemini-2.5-pro)")
+		fmt.Println("Claude Sonnet 4.5 (claude-sonnet-4-5)")
+		fmt.Println("GPT-4o (gpt-4o)")
+		os.Exit(0)
+	}
+	maybeMockQuotaFail(os.Args[1:])
 	stdinBytes, _ := io.ReadAll(os.Stdin)
 	var in struct {
 		Message struct {
@@ -263,10 +331,12 @@ func runMockAgy() {
 	_ = json.Unmarshal(stdinBytes, &in)
 	workDir, _ := os.Getwd()
 	promptMD, contextMD, _ := readInputFiles(workDir)
+	joinedArgs := strings.Join(os.Args[1:], " ")
 	answer := fmt.Sprintf(
-		"provider=antigravity has_context=%v prompt_md=[%s] content=[%s]",
+		"provider=antigravity has_context=%v prompt_md=[%s] args=[%s] content=[%s]",
 		contextMD != "",
 		summarizeTextMarkers(promptMD),
+		joinedArgs,
 		strings.ReplaceAll(in.Message.Content, "\n", "|"),
 	)
 	fmt.Println(`{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"agy "}}`)
@@ -319,6 +389,7 @@ type testHarness struct {
 	Sessions   *session.Manager
 	Auth       *auth.Store
 	Registry   *executor.Registry
+	Pools      *pools.Store
 	ProcMgr    *process.Manager
 	OllamaURL  string
 	OllamaReqs func() []recordedOllamaReq
@@ -560,6 +631,7 @@ func newTestHarness(t *testing.T, opts harnessOptions) *testHarness {
 		t.Fatalf("ApplyOverrides: %v", err)
 	}
 
+	poolsStore := pools.NewStore(db.SQL())
 	logger := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 	handler := api.NewRouter(api.Dependencies{
 		Config:    cfg,
@@ -570,6 +642,7 @@ func newTestHarness(t *testing.T, opts harnessOptions) *testHarness {
 		Files:     fileStore,
 		Sessions:  sessMgr,
 		Registry:  registry,
+		Pools:     poolsStore,
 		ProcMgr:   procMgr,
 	})
 	ts := httptest.NewServer(handler)
@@ -585,6 +658,7 @@ func newTestHarness(t *testing.T, opts harnessOptions) *testHarness {
 		Sessions:  sessMgr,
 		Auth:      authStore,
 		Registry:  registry,
+		Pools:     poolsStore,
 		ProcMgr:   procMgr,
 		OllamaURL: ollamaSrv.URL,
 		OllamaReqs: func() []recordedOllamaReq {

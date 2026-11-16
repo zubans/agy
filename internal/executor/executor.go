@@ -101,11 +101,13 @@ const (
 
 // ExecError represents a sanitized, typed executor failure.
 type ExecError struct {
-	Kind     ErrorKind
-	Code     string
-	Message  string
-	ExitCode int
-	Cause    error
+	Kind              ErrorKind
+	Code              string
+	Message           string
+	ExitCode          int
+	RetryAfterSeconds int64
+	CooldownSource    string
+	Cause             error
 }
 
 func (e *ExecError) Error() string {
@@ -136,6 +138,19 @@ type ExecuteResult struct {
 	Usage             Usage
 	ExitCode          int
 	Error             *ExecError
+}
+
+// ModelDescriptor describes a selectable model offered by an executor provider.
+type ModelDescriptor struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Default     bool   `json:"default,omitempty"`
+}
+
+// ModelLister is optionally implemented by executors capable of enumerating selectable sub-models.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelDescriptor, string, error)
 }
 
 // Executor defines the unified contract for CLI adapters and local engines (Section 7.4).

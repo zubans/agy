@@ -378,15 +378,19 @@ models:
   - id: claude-1
     provider: claude
     worker_url: http://claude-1:9090
+    public: false
   - id: claude-2
     provider: claude
     worker_url: http://claude-2:9090
+    public: false
   - id: codex-1
     provider: codex
     worker_url: http://codex-1:9090
+    public: false
   - id: codex-2
     provider: codex
     worker_url: http://codex-2:9090
+    public: false
   - id: agy-4
     provider: antigravity
     worker_url: http://agy-4:9090
@@ -415,7 +419,17 @@ models:
 			if m.EffectiveEnabled() {
 				t.Fatalf("expected remote-ollama disabled by default when GATEWAY_OLLAMA_BASE_URL is unset")
 			}
+			if m.EffectivePublic() {
+				t.Fatalf("expected remote-ollama public=false in configs/config.docker.yaml")
+			}
 			continue
+		}
+		if id == "agy-4" {
+			if !m.EffectivePublic() {
+				t.Fatalf("expected omitted public field on agy-4 to default to true")
+			}
+		} else if m.EffectivePublic() {
+			t.Fatalf("expected %q to have public=false", id)
 		}
 		if !strings.HasPrefix(m.WorkerURL, "http://"+id+":9090") || m.WorkerToken != "test-docker-worker-token" {
 			t.Fatalf("unexpected merged worker config for %q: %+v", id, m)

@@ -43,6 +43,56 @@ func (e *Executor) Check(_ context.Context) error {
 	return executor.CheckBinary(e.cfg.Executable)
 }
 
+// ListModels inspects ~/.claude/settings.json and merges standard Claude Code CLI aliases/models.
+func (e *Executor) ListModels(_ context.Context) ([]executor.ModelDescriptor, string, error) {
+	seen := make(map[string]struct{})
+	var out []executor.ModelDescriptor
+	add := func(d executor.ModelDescriptor) {
+		id := strings.TrimSpace(d.ID)
+		if id == "" {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		d.ID = id
+		if d.Name == "" {
+			d.Name = id
+		}
+		out = append(out, d)
+	}
+
+	source := "curated_aliases"
+	if e.cfg.Model != "" {
+		add(executor.ModelDescriptor{ID: e.cfg.Model, Name: e.cfg.Model, Default: true})
+	}
+	if home := strings.TrimSpace(e.cfg.HomeDir); home != "" {
+		if raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json")); err == nil {
+			var s struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(raw, &s) == nil && strings.TrimSpace(s.Model) != "" {
+				source = "claude_settings"
+				add(executor.ModelDescriptor{ID: s.Model, Name: s.Model, Description: "Configured in ~/.claude/settings.json", Default: true})
+			}
+		}
+	}
+
+	for _, preset := range []executor.ModelDescriptor{
+		{ID: "sonnet", Name: "Sonnet (alias)", Description: "Latest Claude Sonnet via Claude Code CLI"},
+		{ID: "opus", Name: "Opus (alias)", Description: "Latest Claude Opus via Claude Code CLI"},
+		{ID: "haiku", Name: "Haiku (alias)", Description: "Latest Claude Haiku via Claude Code CLI"},
+		{ID: "claude-sonnet-4-6", Name: "claude-sonnet-4-6"},
+		{ID: "claude-opus-4-6", Name: "claude-opus-4-6"},
+		{ID: "claude-haiku-4-5", Name: "claude-haiku-4-5"},
+	} {
+		add(preset)
+	}
+
+	return out, source, nil
+}
+
 func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emit executor.EventHandler) (executor.ExecuteResult, error) {
 	if err := e.Check(ctx); err != nil {
 		execErr := &executor.ExecError{

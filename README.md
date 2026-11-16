@@ -103,26 +103,31 @@ GATEWAY_OLLAMA_MODEL=qwen3
 
 Additional Ollama instances can be added/edited anytime via Web Admin (`/admin/`).
 
-### 6. Verify readiness and send a test request
+### 6. Verify readiness, publish models, and send a test request
+
+Raw worker containers (`claude-*`, `codex-*`, `gemini-*`, `agy-*`, `remote-ollama`) are registered with `public: false` so `GET /v1/models` only exposes models explicitly published from the Web Admin console (individual sub-models or composite pools):
 
 ```bash
 curl -s http://127.0.0.1:7070/health
 curl -s http://127.0.0.1:7070/ready
 
+# After publishing a standalone or composite model (e.g. "agy-pool") in http://127.0.0.1:7070/admin/
 set -a && . ./.env && set +a
+curl -s http://127.0.0.1:7070/v1/models -H "Authorization: Bearer $GATEWAY_API_KEY"
 curl -s http://127.0.0.1:7070/v1/responses \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"codex-2","input":"Hello from codex-2 container"}'
+  -d '{"model":"agy-pool","input":"Hello from published model"}'
 ```
 
 ## Web Admin Console (`/admin/`)
 
 Open `http://127.0.0.1:7070/admin/` and sign in with `GATEWAY_ADMIN_TOKEN` from `.env`:
 
-- View readiness of every worker container and Ollama model, toggle enable/disable, tune `timeout_seconds` / `max_concurrent`, update `worker_url` / `base_url`, and trigger live checks.
-- Dynamically register/delete remote `ollama` models or external worker URLs (persisted in SQLite `model_overrides`).
-- Inspect/cancel live runs (`PGID` killed cleanly inside worker container), manage API keys/sessions/files, and test prompts via SSE Playground.
+- **Providers & Model Discovery**: inspect readiness of every worker container and Ollama backend, refresh discovered CLI/API sub-models (`agy models`, `gemini --list-models`, Codex cache/presets, Claude settings/aliases, Ollama `/api/tags`), add custom model IDs, and publish chosen sub-models as standalone public gateway models.
+- **Model Constructor (Composite Pools & Priority Failover)**: assemble composite models across homogeneous (`3x agy`) or heterogeneous (`codex -> agy -> claude`) `(provider_id, provider_model)` targets with explicit **priority tiers** (`priority = 1, 2, ...`) and `priority_order` / `round_robin` routing within a tier.
+- **Per-Model Cooldowns**: when a target hits a rate/quota limit before streaming begins, the gateway parses reset/retry durations from the response (`Resets in ...`, `Try again in ...`, `Retry-After`, ISO/UTC timestamps) or falls back to `default_cooldown_seconds`, automatically fails over to the next available target on the same request, isolates cooldown strictly per `(provider_id, provider_model)`, returns immediately to higher-priority tiers once recovered, and lets admins inspect or manually release active cooldowns.
+- **Runs, Sessions, Files, Keys & Playground**: inspect target provider/model per run, cancel live runs (`PGID` killed cleanly inside worker container), manage API keys/sessions/files, and test published models via SSE Playground.
 
 See the full Russian operations guide in [docs/operations.md](docs/operations.md).
 

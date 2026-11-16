@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,6 +40,85 @@ func (e *Executor) Capabilities() executor.Capabilities {
 
 func (e *Executor) Check(_ context.Context) error {
 	return executor.CheckBinary(e.cfg.Executable)
+}
+
+// ListModels reads $CODEX_HOME/models_cache.json if present and merges curated Codex CLI models.
+func (e *Executor) ListModels(_ context.Context) ([]executor.ModelDescriptor, string, error) {
+	seen := make(map[string]struct{})
+	var out []executor.ModelDescriptor
+	add := func(d executor.ModelDescriptor) {
+		id := strings.TrimSpace(d.ID)
+		if id == "" {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		d.ID = id
+		if d.Name == "" {
+			d.Name = id
+		}
+		out = append(out, d)
+	}
+
+	source := "curated_defaults"
+	if e.cfg.Model != "" {
+		add(executor.ModelDescriptor{ID: e.cfg.Model, Name: e.cfg.Model, Default: true})
+	}
+
+	home := strings.TrimSpace(e.cfg.HomeDir)
+	if home == "" {
+		home = os.Getenv("CODEX_HOME")
+	}
+	if home != "" {
+		cacheCandidates := []string{
+			filepath.Join(home, "models_cache.json"),
+			filepath.Join(home, ".codex", "models_cache.json"),
+		}
+		for _, p := range cacheCandidates {
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			var cache struct {
+				Models []struct {
+					Slug        string `json:"slug"`
+					ID          string `json:"id"`
+					DisplayName string `json:"display_name"`
+					Description string `json:"description"`
+					Visibility  string `json:"visibility"`
+				} `json:"models"`
+			}
+			if json.Unmarshal(raw, &cache) == nil && len(cache.Models) > 0 {
+				source = "codex_models_cache"
+				for _, m := range cache.Models {
+					if m.Visibility == "hidden" {
+						continue
+					}
+					id := m.Slug
+					if id == "" {
+						id = m.ID
+					}
+					add(executor.ModelDescriptor{ID: id, Name: m.DisplayName, Description: m.Description})
+				}
+				break
+			}
+		}
+	}
+
+	for _, preset := range []executor.ModelDescriptor{
+		{ID: "gpt-5.4", Name: "gpt-5.4"},
+		{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"},
+		{ID: "gpt-5.2-codex", Name: "gpt-5.2-codex"},
+		{ID: "gpt-5.1-codex", Name: "gpt-5.1-codex"},
+		{ID: "o3", Name: "o3"},
+		{ID: "o4-mini", Name: "o4-mini"},
+	} {
+		add(preset)
+	}
+
+	return out, source, nil
 }
 
 func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emit executor.EventHandler) (executor.ExecuteResult, error) {

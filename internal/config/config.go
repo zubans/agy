@@ -112,6 +112,7 @@ type ModelConfig struct {
 	FSAccess       string            `yaml:"fs_access"`
 	MaxConcurrent  int               `yaml:"max_concurrent"`
 	Enabled        *bool             `yaml:"enabled"`
+	Public         *bool             `yaml:"public"`
 }
 
 // EffectiveEnabled returns whether the model is enabled (defaults to true).
@@ -120,6 +121,14 @@ func (m ModelConfig) EffectiveEnabled() bool {
 		return true
 	}
 	return *m.Enabled
+}
+
+// EffectivePublic returns whether a standalone provider entry is directly published in GET /v1/models (defaults to true).
+func (m ModelConfig) EffectivePublic() bool {
+	if m.Public == nil {
+		return true
+	}
+	return *m.Public
 }
 
 // EffectiveCleanupRunInput returns whether temporary run input dirs are purged on finish.

@@ -31,6 +31,8 @@ type Session struct {
 	OwnerID           string `json:"owner_id"`
 	Provider          string `json:"provider"`
 	Model             string `json:"model"`
+	TargetProviderID  string `json:"target_provider_id,omitempty"`
+	TargetModel       string `json:"target_model,omitempty"`
 	ProviderSessionID string `json:"provider_session_id"`
 	LastResponseID    string `json:"last_response_id"`
 	TurnCount         int    `json:"turn_count"`
@@ -40,27 +42,31 @@ type Session struct {
 
 // HistoryEntry is one turn appended to sessions/<id>/history.jsonl.
 type HistoryEntry struct {
-	Role       string `json:"role"`
-	Content    string `json:"content"`
-	ResponseID string `json:"response_id,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Provider   string `json:"provider,omitempty"`
-	Timestamp  int64  `json:"timestamp"`
+	Role             string `json:"role"`
+	Content          string `json:"content"`
+	ResponseID       string `json:"response_id,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	TargetProviderID string `json:"target_provider_id,omitempty"`
+	TargetModel      string `json:"target_model,omitempty"`
+	Timestamp        int64  `json:"timestamp"`
 }
 
 // RunRecord holds run workspace paths and metadata.
 type RunRecord struct {
-	ID         string
-	ResponseID string
-	SessionID  string
-	OwnerID    string
-	Model      string
-	Provider   string
-	Dir        string
-	InputDir   string
-	EventsPath string
-	ResultPath string
-	CreatedAt  int64
+	ID               string
+	ResponseID       string
+	SessionID        string
+	OwnerID          string
+	Model            string
+	Provider         string
+	TargetProviderID string
+	TargetModel      string
+	Dir              string
+	InputDir         string
+	EventsPath       string
+	ResultPath       string
+	CreatedAt        int64
 }
 
 // Manager coordinates sessions, sequential per-session locking, run workspaces, and filesystem history (Section 8).
@@ -157,10 +163,10 @@ func (m *Manager) ResolveOrCreateSession(ctx context.Context, ownerID, modelID, 
 func (m *Manager) GetSession(ctx context.Context, sessionID string) (Session, error) {
 	var sess Session
 	err := m.db.SQL().QueryRowContext(ctx, `
-		SELECT id, owner_id, provider, model, provider_session_id, last_response_id, turn_count, created_at, updated_at
+		SELECT id, owner_id, provider, model, target_provider_id, target_model, provider_session_id, last_response_id, turn_count, created_at, updated_at
 		FROM sessions WHERE id = ?
 	`, sessionID).Scan(
-		&sess.ID, &sess.OwnerID, &sess.Provider, &sess.Model,
+		&sess.ID, &sess.OwnerID, &sess.Provider, &sess.Model, &sess.TargetProviderID, &sess.TargetModel,
 		&sess.ProviderSessionID, &sess.LastResponseID, &sess.TurnCount, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err != nil {
@@ -200,8 +206,17 @@ func (m *Manager) AcquireSessionLock(ctx context.Context, sessionID string) (fun
 
 // CreateRun allocates an isolated run directory and records queued/running metadata in SQLite.
 func (m *Manager) CreateRun(ctx context.Context, sess Session, previousResponseID, modelID, provider string, inputBytes int64, fileIDs []string) (RunRecord, error) {
+	return m.CreateRunAttempt(ctx, sess, previousResponseID, "", modelID, provider, modelID, "", inputBytes, fileIDs)
+}
+
+// CreateRunAttempt allocates an isolated run directory and links it to existingResponseID (or allocates a new resp ID on first attempt).
+func (m *Manager) CreateRunAttempt(ctx context.Context, sess Session, previousResponseID, existingResponseID, modelID, provider, targetProviderID, targetModel string, inputBytes int64, fileIDs []string) (RunRecord, error) {
 	runID := newID("run")
-	respID := newID("resp")
+	respID := existingResponseID
+	isNewResponse := respID == ""
+	if isNewResponse {
+		respID = newID("resp")
+	}
 	now := time.Now().Unix()
 
 	runDir := filepath.Join(m.runsDir, runID)
@@ -220,19 +235,30 @@ func (m *Manager) CreateRun(ctx context.Context, sess Session, previousResponseI
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO runs (id, owner_id, session_id, response_id, model, provider, status, input_bytes, file_ids_json, created_at, started_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
-	`, runID, sess.OwnerID, sess.ID, respID, modelID, provider, inputBytes, string(fileIDsJSON), now, now); err != nil {
+		INSERT INTO runs (id, owner_id, session_id, response_id, model, provider, target_provider_id, target_model, status, input_bytes, file_ids_json, created_at, started_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
+	`, runID, sess.OwnerID, sess.ID, respID, modelID, provider, targetProviderID, targetModel, inputBytes, string(fileIDsJSON), now, now); err != nil {
 		_ = os.RemoveAll(runDir)
 		return RunRecord{}, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO responses (id, owner_id, session_id, previous_response_id, run_id, model, provider, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'in_progress', ?)
-	`, respID, sess.OwnerID, sess.ID, previousResponseID, runID, modelID, provider, now); err != nil {
-		_ = os.RemoveAll(runDir)
-		return RunRecord{}, err
+	if isNewResponse {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO responses (id, owner_id, session_id, previous_response_id, run_id, model, provider, target_provider_id, target_model, status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?)
+		`, respID, sess.OwnerID, sess.ID, previousResponseID, runID, modelID, provider, targetProviderID, targetModel, now); err != nil {
+			_ = os.RemoveAll(runDir)
+			return RunRecord{}, err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE responses
+			SET run_id = ?, model = ?, provider = ?, target_provider_id = ?, target_model = ?, status = 'in_progress', error_code = '', error_message = ''
+			WHERE id = ?
+		`, runID, modelID, provider, targetProviderID, targetModel, respID); err != nil {
+			_ = os.RemoveAll(runDir)
+			return RunRecord{}, err
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -248,22 +274,24 @@ func (m *Manager) CreateRun(ctx context.Context, sess Session, previousResponseI
 	}
 
 	return RunRecord{
-		ID:         runID,
-		ResponseID: respID,
-		SessionID:  sess.ID,
-		OwnerID:    sess.OwnerID,
-		Model:      modelID,
-		Provider:   provider,
-		Dir:        runDir,
-		InputDir:   inputDir,
-		EventsPath: filepath.Join(runDir, "events.jsonl"),
-		ResultPath: filepath.Join(runDir, "result.json"),
-		CreatedAt:  now,
+		ID:               runID,
+		ResponseID:       respID,
+		SessionID:        sess.ID,
+		OwnerID:          sess.OwnerID,
+		Model:            modelID,
+		Provider:         provider,
+		TargetProviderID: targetProviderID,
+		TargetModel:      targetModel,
+		Dir:              runDir,
+		InputDir:         inputDir,
+		EventsPath:       filepath.Join(runDir, "events.jsonl"),
+		ResultPath:       filepath.Join(runDir, "result.json"),
+		CreatedAt:        now,
 	}, nil
 }
 
 // BuildSessionContext determines whether to resume the CLI session directly or restore file history (Section 8.2-8.3).
-// When switching providers or when the executor does not support SessionResume, it writes ./input/context.md
+// When switching provider instances/containers, sub-models, or when SessionResume is unsupported, it writes ./input/context.md
 // from sessions/<id>/history.jsonl and returns IsResume=false.
 func (m *Manager) BuildSessionContext(sess Session, isContinuation bool, targetProvider string, caps executor.Capabilities, run RunRecord) (executor.SessionContext, *executor.ExecuteFile, error) {
 	if !isContinuation {
@@ -273,7 +301,9 @@ func (m *Manager) BuildSessionContext(sess Session, isContinuation bool, targetP
 		}, nil, nil
 	}
 
-	if sess.Provider == targetProvider && caps.SessionResume && sess.ProviderSessionID != "" {
+	sameTargetProvider := sess.TargetProviderID != "" && sess.TargetProviderID == run.TargetProviderID
+	sameTargetModel := sess.TargetModel == run.TargetModel
+	if sess.Provider == targetProvider && sameTargetProvider && sameTargetModel && caps.SessionResume && sess.ProviderSessionID != "" {
 		return executor.SessionContext{
 			GatewaySessionID:  sess.ID,
 			ProviderSessionID: sess.ProviderSessionID,
@@ -372,6 +402,8 @@ func (m *Manager) FinishRun(ctx context.Context, sess Session, run RunRecord, us
 		"gateway_session_id":  sess.ID,
 		"provider":            run.Provider,
 		"model":               run.Model,
+		"target_provider_id":  run.TargetProviderID,
+		"target_model":        run.TargetModel,
 		"provider_session_id": res.ProviderSessionID,
 		"status":              runStatus,
 		"answer":              res.Answer,
@@ -409,11 +441,15 @@ func (m *Manager) FinishRun(ctx context.Context, sess Session, run RunRecord, us
 	}
 
 	if runStatus == "completed" {
+		prevProvider := sess.Provider
+		prevTargetID := sess.TargetProviderID
 		sess.Provider = run.Provider
 		sess.Model = run.Model
+		sess.TargetProviderID = run.TargetProviderID
+		sess.TargetModel = run.TargetModel
 		if res.ProviderSessionID != "" {
 			sess.ProviderSessionID = res.ProviderSessionID
-		} else if sess.Provider != run.Provider {
+		} else if prevProvider != run.Provider || prevTargetID != run.TargetProviderID {
 			sess.ProviderSessionID = ""
 		}
 		sess.LastResponseID = run.ResponseID
@@ -422,9 +458,9 @@ func (m *Manager) FinishRun(ctx context.Context, sess Session, run RunRecord, us
 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE sessions
-			SET provider = ?, model = ?, provider_session_id = ?, last_response_id = ?, active_run_id = '', turn_count = ?, updated_at = ?
+			SET provider = ?, model = ?, target_provider_id = ?, target_model = ?, provider_session_id = ?, last_response_id = ?, active_run_id = '', turn_count = ?, updated_at = ?
 			WHERE id = ?
-		`, sess.Provider, sess.Model, sess.ProviderSessionID, sess.LastResponseID, sess.TurnCount, sess.UpdatedAt, sess.ID); err != nil {
+		`, sess.Provider, sess.Model, sess.TargetProviderID, sess.TargetModel, sess.ProviderSessionID, sess.LastResponseID, sess.TurnCount, sess.UpdatedAt, sess.ID); err != nil {
 			return err
 		}
 	} else {
@@ -441,19 +477,23 @@ func (m *Manager) FinishRun(ctx context.Context, sess Session, run RunRecord, us
 
 	if runStatus == "completed" {
 		_ = m.appendHistory(sess.ID, HistoryEntry{
-			Role:      "user",
-			Content:   userPromptSummary,
-			Model:     run.Model,
-			Provider:  run.Provider,
-			Timestamp: run.CreatedAt,
+			Role:             "user",
+			Content:          userPromptSummary,
+			Model:            run.Model,
+			Provider:         run.Provider,
+			TargetProviderID: run.TargetProviderID,
+			TargetModel:      run.TargetModel,
+			Timestamp:        run.CreatedAt,
 		})
 		_ = m.appendHistory(sess.ID, HistoryEntry{
-			Role:       "assistant",
-			Content:    res.Answer,
-			ResponseID: run.ResponseID,
-			Model:      run.Model,
-			Provider:   run.Provider,
-			Timestamp:  now,
+			Role:             "assistant",
+			Content:          res.Answer,
+			ResponseID:       run.ResponseID,
+			Model:            run.Model,
+			Provider:         run.Provider,
+			TargetProviderID: run.TargetProviderID,
+			TargetModel:      run.TargetModel,
+			Timestamp:        now,
 		})
 		_ = m.writeSessionMetadata(sess)
 		_ = m.writeSessionSummary(sess, userPromptSummary, res.Answer)
@@ -625,23 +665,25 @@ func (m *Manager) CancelRun(runID string) bool {
 
 // RunSummary represents stored run metadata for Admin monitoring & control.
 type RunSummary struct {
-	ID           string   `json:"id"`
-	OwnerID      string   `json:"owner_id"`
-	SessionID    string   `json:"session_id"`
-	ResponseID   string   `json:"response_id"`
-	Model        string   `json:"model"`
-	Provider     string   `json:"provider"`
-	Status       string   `json:"status"`
-	InputBytes   int64    `json:"input_bytes"`
-	FileIDs      []string `json:"file_ids"`
-	ExitCode     *int     `json:"exit_code,omitempty"`
-	DurationMS   int64    `json:"duration_ms"`
-	ErrorType    string   `json:"error_type,omitempty"`
-	ErrorMessage string   `json:"error_message,omitempty"`
-	CreatedAt    int64    `json:"created_at"`
-	StartedAt    *int64   `json:"started_at,omitempty"`
-	FinishedAt   *int64   `json:"finished_at,omitempty"`
-	LiveActive   bool     `json:"live_active"`
+	ID               string   `json:"id"`
+	OwnerID          string   `json:"owner_id"`
+	SessionID        string   `json:"session_id"`
+	ResponseID       string   `json:"response_id"`
+	Model            string   `json:"model"`
+	Provider         string   `json:"provider"`
+	TargetProviderID string   `json:"target_provider_id,omitempty"`
+	TargetModel      string   `json:"target_model,omitempty"`
+	Status           string   `json:"status"`
+	InputBytes       int64    `json:"input_bytes"`
+	FileIDs          []string `json:"file_ids"`
+	ExitCode         *int     `json:"exit_code,omitempty"`
+	DurationMS       int64    `json:"duration_ms"`
+	ErrorType        string   `json:"error_type,omitempty"`
+	ErrorMessage     string   `json:"error_message,omitempty"`
+	CreatedAt        int64    `json:"created_at"`
+	StartedAt        *int64   `json:"started_at,omitempty"`
+	FinishedAt       *int64   `json:"finished_at,omitempty"`
+	LiveActive       bool     `json:"live_active"`
 }
 
 // RunDetail enriches RunSummary with disk result/event tails when available.
@@ -662,7 +704,7 @@ func (m *Manager) ListRuns(ctx context.Context, statusFilter string, limit int) 
 	)
 	if statusFilter != "" && statusFilter != "all" {
 		rows, err = m.db.SQL().QueryContext(ctx, `
-			SELECT id, owner_id, session_id, response_id, model, provider, status,
+			SELECT id, owner_id, session_id, response_id, model, provider, target_provider_id, target_model, status,
 			       input_bytes, file_ids_json, exit_code, duration_ms, error_type, error_message,
 			       created_at, started_at, finished_at
 			FROM runs WHERE status = ?
@@ -670,7 +712,7 @@ func (m *Manager) ListRuns(ctx context.Context, statusFilter string, limit int) 
 		`, statusFilter, limit)
 	} else {
 		rows, err = m.db.SQL().QueryContext(ctx, `
-			SELECT id, owner_id, session_id, response_id, model, provider, status,
+			SELECT id, owner_id, session_id, response_id, model, provider, target_provider_id, target_model, status,
 			       input_bytes, file_ids_json, exit_code, duration_ms, error_type, error_message,
 			       created_at, started_at, finished_at
 			FROM runs
@@ -707,7 +749,7 @@ func (m *Manager) GetRunDetail(ctx context.Context, runID string) (RunDetail, er
 		return RunDetail{}, sql.ErrNoRows
 	}
 	row := m.db.SQL().QueryRowContext(ctx, `
-		SELECT id, owner_id, session_id, response_id, model, provider, status,
+		SELECT id, owner_id, session_id, response_id, model, provider, target_provider_id, target_model, status,
 		       input_bytes, file_ids_json, exit_code, duration_ms, error_type, error_message,
 		       created_at, started_at, finished_at
 		FROM runs WHERE id = ?
@@ -750,7 +792,7 @@ func (m *Manager) ListSessions(ctx context.Context, limit int) ([]SessionSummary
 		limit = 100
 	}
 	rows, err := m.db.SQL().QueryContext(ctx, `
-		SELECT id, owner_id, provider, model, provider_session_id, last_response_id, active_run_id, turn_count, created_at, updated_at
+		SELECT id, owner_id, provider, model, target_provider_id, target_model, provider_session_id, last_response_id, active_run_id, turn_count, created_at, updated_at
 		FROM sessions
 		ORDER BY updated_at DESC LIMIT ?
 	`, limit)
@@ -763,7 +805,7 @@ func (m *Manager) ListSessions(ctx context.Context, limit int) ([]SessionSummary
 	for rows.Next() {
 		var s SessionSummary
 		if err := rows.Scan(
-			&s.ID, &s.OwnerID, &s.Provider, &s.Model, &s.ProviderSessionID,
+			&s.ID, &s.OwnerID, &s.Provider, &s.Model, &s.TargetProviderID, &s.TargetModel, &s.ProviderSessionID,
 			&s.LastResponseID, &s.ActiveRunID, &s.TurnCount, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -780,10 +822,10 @@ func (m *Manager) GetSessionDetail(ctx context.Context, sessionID string) (Sessi
 	}
 	var s SessionSummary
 	err := m.db.SQL().QueryRowContext(ctx, `
-		SELECT id, owner_id, provider, model, provider_session_id, last_response_id, active_run_id, turn_count, created_at, updated_at
+		SELECT id, owner_id, provider, model, target_provider_id, target_model, provider_session_id, last_response_id, active_run_id, turn_count, created_at, updated_at
 		FROM sessions WHERE id = ?
 	`, sessionID).Scan(
-		&s.ID, &s.OwnerID, &s.Provider, &s.Model, &s.ProviderSessionID,
+		&s.ID, &s.OwnerID, &s.Provider, &s.Model, &s.TargetProviderID, &s.TargetModel, &s.ProviderSessionID,
 		&s.LastResponseID, &s.ActiveRunID, &s.TurnCount, &s.CreatedAt, &s.UpdatedAt,
 	)
 	if err != nil {
@@ -798,7 +840,7 @@ func (m *Manager) GetSessionDetail(ctx context.Context, sessionID string) (Sessi
 	}
 
 	rows, err := m.db.SQL().QueryContext(ctx, `
-		SELECT id, owner_id, session_id, response_id, model, provider, status,
+		SELECT id, owner_id, session_id, response_id, model, provider, target_provider_id, target_model, status,
 		       input_bytes, file_ids_json, exit_code, duration_ms, error_type, error_message,
 		       created_at, started_at, finished_at
 		FROM runs WHERE session_id = ?
@@ -877,7 +919,7 @@ func scanRunRow(s rowScanner) (RunSummary, error) {
 		finishedAt  sql.NullInt64
 	)
 	if err := s.Scan(
-		&rs.ID, &rs.OwnerID, &rs.SessionID, &rs.ResponseID, &rs.Model, &rs.Provider, &rs.Status,
+		&rs.ID, &rs.OwnerID, &rs.SessionID, &rs.ResponseID, &rs.Model, &rs.Provider, &rs.TargetProviderID, &rs.TargetModel, &rs.Status,
 		&rs.InputBytes, &fileIDsJSON, &exitCode, &rs.DurationMS, &rs.ErrorType, &rs.ErrorMessage,
 		&rs.CreatedAt, &startedAt, &finishedAt,
 	); err != nil {

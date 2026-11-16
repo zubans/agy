@@ -61,3 +61,4 @@ models:
     timeout_seconds: 600
     max_concurrent: 4
     enabled: false
+    public: false

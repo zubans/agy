@@ -18,6 +18,7 @@ import (
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
 	"cli-ai-gateway/internal/executor/defaults"
+	"cli-ai-gateway/internal/pools"
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
@@ -119,6 +120,8 @@ func main() {
 	// Background storage retention cleanup loop (Section 13.3).
 	go runCleanupLoop(ctx, logger, fileStore, sessionMgr, cfg.Storage.CleanupInterval())
 
+	poolStore := pools.NewStore(db.SQL())
+
 	router := api.NewRouter(api.Dependencies{
 		Config:    cfg,
 		StartedAt: time.Now(),
@@ -128,6 +131,7 @@ func main() {
 		Files:     fileStore,
 		Sessions:  sessionMgr,
 		Registry:  registry,
+		Pools:     poolStore,
 		ProcMgr:   procMgr,
 	})
 

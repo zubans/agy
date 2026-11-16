@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -38,6 +40,104 @@ func (e *Executor) Capabilities() executor.Capabilities {
 
 func (e *Executor) Check(_ context.Context) error {
 	return executor.CheckBinary(e.cfg.Executable)
+}
+
+var reGeminiListModel = regexp.MustCompile(`^([a-zA-Z0-9._:-]+)\s*\(([^)]+)\)\s*$`)
+
+// ListModels queries `gemini --list-models` inside the runtime environment.
+func (e *Executor) ListModels(ctx context.Context) ([]executor.ModelDescriptor, string, error) {
+	if err := e.Check(ctx); err != nil {
+		return nil, "unavailable", err
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var stdout strings.Builder
+	res, runErr := e.procMgr.RunStream(probeCtx, process.RunSpec{
+		Executable:     e.cfg.Executable,
+		Args:           []string{"--list-models"},
+		WorkDir:        os.TempDir(),
+		HomeDir:        e.cfg.HomeDir,
+		ExtraEnv:       e.cfg.Env,
+		MaxOutputBytes: 512 * 1024,
+		OnLine: func(line []byte) error {
+			stdout.Write(line)
+			stdout.WriteByte('\n')
+			return nil
+		},
+	})
+
+	parsed := parseGeminiModelsOutput(stdout.String())
+	if len(parsed) == 0 {
+		parsed = parseGeminiModelsOutput(res.Stderr)
+	}
+	if len(parsed) == 0 {
+		fallback := []executor.ModelDescriptor{
+			{ID: "auto", Name: "Auto", Default: true},
+			{ID: "gemini-2.5-pro", Name: "gemini-2.5-pro"},
+			{ID: "gemini-3.5-flash", Name: "gemini-3.5-flash"},
+			{ID: "gemini-3.1-flash-lite", Name: "gemini-3.1-flash-lite"},
+		}
+		if runErr != nil {
+			return fallback, "curated_fallback", nil
+		}
+		return fallback, "curated_fallback", nil
+	}
+	if e.cfg.Model != "" {
+		found := false
+		for _, m := range parsed {
+			if m.ID == e.cfg.Model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			parsed = append([]executor.ModelDescriptor{{ID: e.cfg.Model, Name: e.cfg.Model}}, parsed...)
+		}
+	}
+	return parsed, "gemini_list_models", nil
+}
+
+func parseGeminiModelsOutput(raw string) []executor.ModelDescriptor {
+	var out []executor.ModelDescriptor
+	var cur *executor.ModelDescriptor
+	for _, rawLine := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" || strings.HasPrefix(strings.ToLower(trimmed), "available ") {
+			continue
+		}
+		isIndented := len(rawLine) > 0 && (rawLine[0] == ' ' || rawLine[0] == '\t')
+		if !isIndented {
+			if m := reGeminiListModel.FindStringSubmatch(trimmed); len(m) == 3 {
+				if cur != nil {
+					out = append(out, *cur)
+				}
+				cur = &executor.ModelDescriptor{
+					ID:      strings.TrimSpace(m[1]),
+					Name:    strings.TrimSpace(m[2]),
+					Default: strings.EqualFold(strings.TrimSpace(m[1]), "auto"),
+				}
+				continue
+			}
+		}
+		if cur != nil && isIndented {
+			if strings.HasPrefix(trimmed, "Description:") {
+				cur.Description = strings.TrimSpace(strings.TrimPrefix(trimmed, "Description:"))
+			} else if strings.HasPrefix(trimmed, "Context limit:") {
+				ctxInfo := strings.TrimSpace(trimmed)
+				if cur.Description != "" {
+					cur.Description += " | " + ctxInfo
+				} else {
+					cur.Description = ctxInfo
+				}
+			}
+		}
+	}
+	if cur != nil {
+		out = append(out, *cur)
+	}
+	return out
 }
 
 func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emit executor.EventHandler) (executor.ExecuteResult, error) {

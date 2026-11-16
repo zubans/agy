@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CLI AI Gateway — Админ-панель</title>
+  <title>CLI AI Gateway — Админ-панель и конструктор моделей</title>
   <style>
     :root {
       --bg: #0b1020;
@@ -32,13 +32,9 @@
       line-height: 1.45;
     }
     a { color: var(--accent); }
-    button, input, select, textarea {
-      font: inherit;
-      color: inherit;
-    }
+    button, input, select, textarea { font: inherit; color: inherit; }
     .hidden { display: none !important; }
 
-    /* Top bar */
     header {
       position: sticky;
       top: 0;
@@ -53,48 +49,32 @@
       justify-content: space-between;
       gap: 12px;
     }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 700;
-      font-size: 16px;
-    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
     .pill {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 3px 10px;
+      padding: 2px 9px;
       border-radius: 999px;
       font-size: 12px;
       font-weight: 600;
       background: var(--panel-2);
       border: 1px solid var(--border);
+      white-space: nowrap;
     }
     .pill.ok { border-color: rgba(34,197,94,.45); color: #86efac; background: rgba(34,197,94,.12); }
     .pill.degraded { border-color: rgba(245,158,11,.45); color: #fcd34d; background: rgba(245,158,11,.12); }
     .pill.bad { border-color: rgba(239,68,68,.45); color: #fca5a5; background: rgba(239,68,68,.12); }
     .pill.muted { color: var(--muted); }
+    .top-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
-    .top-actions {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-    }
+    main { max-width: 1420px; margin: 0 auto; padding: 18px 20px 48px; }
 
-    main {
-      max-width: 1380px;
-      margin: 0 auto;
-      padding: 18px 20px 48px;
-    }
-
-    /* Stats cards */
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
       gap: 12px;
-      margin-bottom: 18px;
+      margin-bottom: 16px;
     }
     .stat-card {
       background: var(--panel);
@@ -106,7 +86,6 @@
     .stat-val { font-size: 20px; font-weight: 700; font-family: var(--mono); }
     .stat-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
-    /* Tabs */
     .tabs {
       display: flex;
       flex-wrap: wrap;
@@ -126,13 +105,8 @@
       transition: .12s;
     }
     .tab-btn:hover { color: var(--text); border-color: #3a4f82; }
-    .tab-btn.active {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
+    .tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-    /* Panels & Controls */
     .card {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -140,6 +114,7 @@
       padding: 16px;
       margin-bottom: 16px;
     }
+    .card.warn-card { border-color: rgba(245,158,11,.45); background: rgba(245,158,11,.05); }
     .card-head {
       display: flex;
       flex-wrap: wrap;
@@ -148,16 +123,9 @@
       gap: 10px;
       margin-bottom: 12px;
     }
-    .card-head h2 {
-      margin: 0;
-      font-size: 16px;
-    }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
+    .card-head h2 { margin: 0; font-size: 16px; }
+    .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
     .btn {
       background: var(--panel-2);
@@ -187,21 +155,41 @@
     input:focus, select:focus, textarea:focus { border-color: var(--accent); }
     textarea { width: 100%; font-family: var(--mono); font-size: 13px; resize: vertical; }
 
-    /* Table */
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td {
-      text-align: left;
-      padding: 9px 10px;
-      border-bottom: 1px solid var(--border);
-      vertical-align: top;
-    }
+    th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
     th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
     tr:hover td { background: rgba(255,255,255,0.02); }
     .mono { font-family: var(--mono); font-size: 12px; }
     .truncate { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* Auth overlay */
+    .target-chip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+      padding: 4px 8px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .target-row {
+      display: grid;
+      grid-template-columns: 165px 1fr 90px auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+    @media (max-width: 720px) {
+      .target-row { grid-template-columns: 1fr; }
+    }
+
     #login-screen {
       min-height: 100vh;
       display: flex;
@@ -223,7 +211,6 @@
     .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
     .field input, .field select { width: 100%; }
 
-    /* Modal */
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -236,8 +223,8 @@
     }
     .modal {
       width: 100%;
-      max-width: 720px;
-      max-height: 88vh;
+      max-width: 860px;
+      max-height: 90vh;
       overflow: auto;
       background: var(--panel);
       border: 1px solid var(--border);
@@ -256,7 +243,6 @@
       word-break: break-word;
       margin: 0;
     }
-
     .toast {
       position: fixed;
       right: 18px;
@@ -270,12 +256,7 @@
       box-shadow: 0 8px 24px rgba(0,0,0,.45);
     }
     .toast.err { border-color: var(--bad); color: #fecaca; }
-
-    .grid-2 {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 12px;
-    }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
   </style>
 </head>
 <body>
@@ -283,10 +264,10 @@
 <div id="login-screen" class="hidden">
   <form class="login-box" id="login-form">
     <h1>CLI AI Gateway</h1>
-    <p>Вход в панель управления исполнителями, ключами, сессиями и процессами.</p>
+    <p>Вход в панель управления провайдерами, конструктором моделей и запусками.</p>
     <div class="field">
       <label for="login-token">Admin Token</label>
-      <input type="password" id="login-token" placeholder="gw-admin-..." autocomplete="current-password" required>
+      <input type="password" id="login-token" placeholder="gw-adm-..." autocomplete="current-password" required>
     </div>
     <div id="login-error" class="mono" style="color:#fca5a5;margin-bottom:10px;"></div>
     <button type="submit" class="btn primary" style="width:100%;">Войти</button>
@@ -296,7 +277,7 @@
 <div id="app" class="hidden">
   <header>
     <div class="brand">
-      <span>CLI AI Gateway · Админка</span>
+      <span>CLI AI Gateway · Конструктор моделей и пул</span>
       <span id="hdr-status" class="pill muted">...</span>
       <span id="hdr-uptime" class="pill muted">uptime: -</span>
     </div>
@@ -312,15 +293,39 @@
 
   <main>
     <section class="stats-grid" id="stats-grid">
+      <div class="stat-card"><div class="stat-label">Опубликованные модели</div><div class="stat-val" id="st-pub">-</div><div class="stat-sub" id="st-cool">Охлаждений: -</div></div>
+      <div class="stat-card"><div class="stat-label">Провайдеры / Воркеры</div><div class="stat-val" id="st-models">-</div><div class="stat-sub" id="st-db">SQLite: -</div></div>
       <div class="stat-card"><div class="stat-label">Процессы (активные / лимит)</div><div class="stat-val" id="st-proc">-</div><div class="stat-sub" id="st-queue">Очередь: -</div></div>
-      <div class="stat-card"><div class="stat-label">Модели (готовы / всего)</div><div class="stat-val" id="st-models">-</div><div class="stat-sub" id="st-db">SQLite: -</div></div>
       <div class="stat-card"><div class="stat-label">Запуски (активных / всего)</div><div class="stat-val" id="st-runs">-</div><div class="stat-sub" id="st-sess">Сессий: -</div></div>
-      <div class="stat-card"><div class="stat-label">Хранилище файлов</div><div class="stat-val" id="st-storage">-</div><div class="stat-sub" id="st-files">Файлов: -</div></div>
-      <div class="stat-card"><div class="stat-label">Активные API-ключи</div><div class="stat-val" id="st-keys">-</div><div class="stat-sub" id="st-listen">Bind: -</div></div>
+      <div class="stat-card"><div class="stat-label">Хранилище и API-ключи</div><div class="stat-val" id="st-storage">-</div><div class="stat-sub" id="st-keys">Ключей: -</div></div>
     </section>
 
+    <div id="cooldowns-card" class="card warn-card hidden">
+      <div class="card-head">
+        <h2>Активные периоды охлаждения (Cooldown)</h2>
+        <button class="btn sm" id="btn-reload-cooldowns">Обновить</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Провайдер</th>
+              <th>Модель</th>
+              <th>Причина</th>
+              <th>Источник срока</th>
+              <th>Осталось / До</th>
+              <th>Сообщение</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="cooldowns-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <nav class="tabs" id="tabs">
-      <button class="tab-btn active" data-tab="models">Модели и CLI</button>
+      <button class="tab-btn active" data-tab="catalog">Опубликованные модели (Конструктор)</button>
+      <button class="tab-btn" data-tab="providers">Провайдеры и выбор моделей</button>
       <button class="tab-btn" data-tab="runs">Запуски и процессы</button>
       <button class="tab-btn" data-tab="sessions">Сессии</button>
       <button class="tab-btn" data-tab="files">Файлы</button>
@@ -329,26 +334,62 @@
       <button class="tab-btn" data-tab="config">Конфиг и команды</button>
     </nav>
 
-    <!-- TAB: MODELS -->
-    <section id="tab-models" class="tab-pane">
+    <!-- TAB: CATALOG & CONSTRUCTOR -->
+    <section id="tab-catalog" class="tab-pane">
       <div class="card">
         <div class="card-head">
-          <h2>Исполнители и модели</h2>
+          <h2>Опубликованные модели (`GET /v1/models`)</h2>
           <div class="row">
-            <button class="btn" id="btn-check-all-models">Проверить все CLI / Worker / Ollama</button>
-            <button class="btn primary" id="btn-open-add-model">+ Добавить модель</button>
+            <button class="btn" id="btn-reload-catalog">Обновить</button>
+            <button class="btn primary" id="btn-open-constructor">+ Собрать модель (Конструктор)</button>
           </div>
         </div>
+        <p class="hint">
+          Клиентам в <code>GET /v1/models</code> и <code>/v1/responses</code> видны только модели из этого списка (собранные в конструкторе или опубликованные как отдельные модели из вкладки «Провайдеры»).
+          При лимите на одном провайдере (связке <code>провайдер + модель</code>) он уходит в охлаждение (срок парсится из ответа, иначе по умолчанию), а запрос автоматически переходит на следующий доступный вариант по приоритету.
+        </p>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>ID</th>
-                <th>Провайдер / Цель</th>
-                <th>Статус</th>
+                <th>ID модели</th>
+                <th>Тип / Режим</th>
+                <th>Цепочка провайдеров (по приоритетам)</th>
+                <th>Доступность</th>
                 <th>Включена</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="catalog-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: PROVIDERS -->
+    <section id="tab-providers" class="tab-pane hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>Подключённые провайдеры (воркеры и Ollama)</h2>
+          <div class="row">
+            <button class="btn" id="btn-check-all-models">Проверить все</button>
+            <button class="btn primary" id="btn-open-add-model">+ Добавить провайдера</button>
+          </div>
+        </div>
+        <p class="hint">
+          Воркер-контейнеры (<code>agy-*</code>, <code>codex-*</code>, <code>claude-*</code>, <code>gemini-*</code>) и <code>remote-ollama</code> по умолчанию скрыты из клиентского списка моделей (<code>public=нет</code>).
+          Нажмите <strong>«Выбрать модели»</strong> на нужном провайдере, чтобы получить доступные модели и опубликовать их как отдельные модели, либо соберите пул в «Конструкторе».
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Провайдер ID</th>
+                <th>Тип / Адрес</th>
+                <th>Статус</th>
+                <th>Видимость / Вкл</th>
                 <th>Лимиты</th>
-                <th>Capabilities</th>
+                <th>Модели и охлаждение</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -382,7 +423,7 @@
             <thead>
               <tr>
                 <th>Run ID</th>
-                <th>Модель</th>
+                <th>Модель / Исполнитель</th>
                 <th>Владелец</th>
                 <th>Статус</th>
                 <th>Время / Exit</th>
@@ -515,7 +556,7 @@
           </div>
           <div class="field">
             <label for="pg-prompt">Промпт (будет передан через ./input/prompt.md)</label>
-            <textarea id="pg-prompt" rows="6" placeholder="Введите задачу или вопрос для CLI-агента / Ollama..."></textarea>
+            <textarea id="pg-prompt" rows="6" placeholder="Введите задачу или вопрос..."></textarea>
           </div>
           <div class="row" style="margin-bottom:12px;">
             <button type="submit" class="btn primary" id="btn-pg-run">Выполнить (Stream)</button>
@@ -534,43 +575,38 @@
     <section id="tab-config" class="tab-pane hidden">
       <div class="grid-2">
         <div class="card">
-          <div class="card-head"><h2>Команды управления сервисом</h2></div>
-          <pre>Локально (scripts/gateway.sh или make):
-  ./scripts/gateway.sh start
-  ./scripts/gateway.sh status
-  ./scripts/gateway.sh restart
-  ./scripts/gateway.sh stop
-  ./scripts/gateway.sh logs
+          <div class="card-head"><h2>Docker Compose и масштабирование пула</h2></div>
+          <pre>Инициализация (число контейнеров можно менять):
+  make init
+  make init CLAUDE_COUNT=2 CODEX_COUNT=3 GEMINI_COUNT=1 AGY_COUNT=6
 
-systemd (Ubuntu/Debian):
-  sudo systemctl status cli-ai-gateway
-  sudo systemctl restart cli-ai-gateway
-  sudo systemctl stop cli-ai-gateway
-  sudo journalctl -u cli-ai-gateway -f
+Запуск и статус:
+  make up
+  make ps
+  make agent-ls
 
-Docker Compose:
-  docker compose up -d --build
-  docker compose restart gateway
-  docker compose stop
-  docker compose logs -f gateway</pre>
+Добавить / удалить контейнер на лету:
+  make agent-add TYPE=agy COUNT=2
+  make agent-add TYPE=codex
+  make agent-rm NAME=agy-5</pre>
         </div>
         <div class="card">
-          <div class="card-head"><h2>Авторизация CLI-агентов</h2></div>
-          <pre>Codex CLI:
-  CODEX_HOME=/var/lib/cli-gateway/homes/codex codex login
+          <div class="card-head"><h2>Авторизация внутри контейнеров</h2></div>
+          <pre>Antigravity CLI (agy):
+  make agy-login ACCOUNT=1
+  make agy-login ACCOUNT=2
 
-Antigravity CLI:
-  HOME=/var/lib/cli-gateway/homes/antigravity agy
-
-Gemini CLI:
-  HOME=/var/lib/cli-gateway/homes/gemini gemini
+Codex CLI:
+  make codex-login ACCOUNT=1
 
 Claude CLI:
-  HOME=/var/lib/cli-gateway/homes/claude claude auth login
+  make claude-login ACCOUNT=1
 
-Ollama:
-  ollama serve
-  ollama pull qwen3</pre>
+Gemini CLI:
+  make gemini-login ACCOUNT=1
+
+Произвольное имя контейнера:
+  make agent-login NAME=agy-4</pre>
         </div>
       </div>
       <div class="card">
@@ -599,17 +635,19 @@ Ollama:
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  let activeTab = "models";
+  let activeTab = "catalog";
   let authRequired = true;
   let lastPlaygroundResponseId = "";
   let pgAbortCtrl = null;
   let pollTimer = null;
+  let cachedProviders = [];
+  const discoveredCache = {};
 
   function showToast(msg, isErr = false) {
     const el = $("toast");
     el.textContent = msg;
     el.className = isErr ? "toast err" : "toast";
-    setTimeout(() => { el.className = "toast hidden"; }, 3400);
+    setTimeout(() => { el.className = "toast hidden"; }, 3600);
   }
 
   function clearEl(el) {
@@ -622,6 +660,8 @@ Ollama:
       if (k === "class") el.className = v;
       else if (k === "style") el.setAttribute("style", v);
       else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k === "checked") el.checked = !!v;
+      else if (k === "disabled") el.disabled = !!v;
       else el.setAttribute(k, v);
     }
     if (text !== null && text !== undefined) el.textContent = String(text);
@@ -637,6 +677,7 @@ Ollama:
   }
 
   function fmtDuration(sec) {
+    if (!sec || sec < 0) sec = 0;
     if (sec < 60) return `${sec}s`;
     const m = Math.floor(sec / 60);
     if (m < 60) return `${m}m ${sec % 60}s`;
@@ -703,7 +744,9 @@ Ollama:
       pollTimer = setInterval(() => {
         if ($("auto-refresh").checked && !$("app").classList.contains("hidden")) {
           loadStatus();
+          loadCooldowns();
           if (activeTab === "runs") loadRuns();
+          if (activeTab === "catalog") loadCatalog();
         }
       }, 4000);
     }
@@ -726,7 +769,6 @@ Ollama:
     showLogin();
   };
 
-  // Tabs switching
   $("tabs").querySelectorAll(".tab-btn").forEach((btn) => {
     btn.onclick = () => {
       activeTab = btn.dataset.tab;
@@ -746,12 +788,13 @@ Ollama:
   };
 
   async function refreshAll() {
-    await Promise.allSettled([loadStatus(), loadActiveTab()]);
+    await Promise.allSettled([loadStatus(), loadCooldowns(), loadActiveTab()]);
   }
 
   function loadActiveTab() {
     switch (activeTab) {
-      case "models": return loadModels();
+      case "catalog": return loadCatalog();
+      case "providers": return loadProviders();
       case "runs": return loadRuns();
       case "sessions": return loadSessions();
       case "files": return loadFiles();
@@ -769,6 +812,8 @@ Ollama:
       pill.className = "pill " + (s.status === "ok" ? "ok" : s.status === "degraded" ? "degraded" : "bad");
       $("hdr-uptime").textContent = `uptime: ${fmtDuration(s.uptime_seconds)}`;
 
+      $("st-pub").textContent = `${s.counts.published_models || 0}`;
+      $("st-cool").textContent = `Охлаждений: ${s.counts.active_cooldowns || 0}`;
       $("st-proc").textContent = `${s.process.active_global} / ${s.process.max_global_processes}`;
       $("st-queue").textContent = `Очередь: ${s.process.queued} / ${s.process.max_queue_size}`;
       $("st-models").textContent = `${s.counts.ready_models} / ${s.counts.total_models}`;
@@ -776,21 +821,423 @@ Ollama:
       $("st-runs").textContent = `${s.counts.active_runs} / ${s.counts.total_runs}`;
       $("st-sess").textContent = `Сессий: ${s.counts.sessions}`;
       $("st-storage").textContent = `${fmtBytes(s.storage.used_bytes)} / ${fmtBytes(s.storage.quota_bytes)}`;
-      $("st-files").textContent = `Файлов: ${s.storage.file_count}`;
-      $("st-keys").textContent = `${s.counts.active_keys}`;
-      $("st-listen").textContent = `Bind: ${s.listen}`;
+      $("st-keys").textContent = `Ключей: ${s.counts.active_keys} · ${s.listen}`;
     } catch (_) {}
   }
 
-  // MODELS
-  async function loadModels() {
-    const res = await api("/models");
+  // COOLDOWNS
+  async function loadCooldowns() {
+    try {
+      const res = await api("/cooldowns");
+      const list = res.data || [];
+      const card = $("cooldowns-card");
+      const tbody = $("cooldowns-tbody");
+      clearEl(tbody);
+      if (list.length === 0) {
+        card.classList.add("hidden");
+        return;
+      }
+      card.classList.remove("hidden");
+      for (const c of list) {
+        const tr = mk("tr");
+        tr.appendChild(mk("td", { class: "mono" }, c.provider_id));
+        tr.appendChild(mk("td", { class: "mono" }, c.provider_model || "(по умолчанию)"));
+        tr.appendChild(mk("td", {}, "")).appendChild(mk("span", { class: "pill bad" }, c.reason || "rate_limit"));
+        tr.appendChild(mk("td", {}, "")).appendChild(mk("span", { class: "pill " + (c.source === "parsed" ? "ok" : "muted") }, c.source === "parsed" ? "из ответа" : "по умолчанию"));
+        tr.appendChild(mk("td", { class: "mono" }, `${fmtDuration(c.remaining_seconds)} (${fmtTime(c.cooling_until)})`));
+        tr.appendChild(mk("td", { class: "mono truncate", title: c.message || "" }, c.message || "-"));
+        const act = mk("td");
+        act.appendChild(mk("button", {
+          class: "btn sm ok",
+          onclick: async () => {
+            try {
+              await api("/cooldowns/release", { method: "POST", json: { provider_id: c.provider_id, provider_model: c.provider_model || "" } });
+              showToast(`Охлаждение снято для ${c.provider_id}${c.provider_model ? " / " + c.provider_model : ""}`);
+              refreshAll();
+            } catch (err) { showToast(err.message, true); }
+          }
+        }, "Снять охлаждение"));
+        tr.appendChild(act);
+        tbody.appendChild(tr);
+      }
+    } catch (_) {}
+  }
+  $("btn-reload-cooldowns").onclick = loadCooldowns;
+
+  // CATALOG & CONSTRUCTOR
+  async function loadCatalog() {
+    const [catRes, provRes] = await Promise.all([api("/catalog"), api("/providers")]);
+    cachedProviders = provRes.data || [];
+    for (const p of cachedProviders) {
+      if (p.cached_models && p.cached_models.length) {
+        discoveredCache[p.id] = p.cached_models;
+      }
+    }
+
+    const tbody = $("catalog-tbody");
+    clearEl(tbody);
+    const items = catRes.data || [];
+    if (items.length === 0) {
+      const tr = mk("tr");
+      const td = mk("td", { colspan: "6", style: "color:var(--muted);padding:18px;" });
+      td.textContent = "Пока ни одна модель не опубликована. Перейдите во вкладку «Провайдеры и выбор моделей», выберите модели у провайдера или нажмите «+ Собрать модель (Конструктор)».";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    for (const m of items) {
+      const tr = mk("tr");
+      const idTd = mk("td");
+      idTd.appendChild(mk("div", { class: "mono", style: "font-weight:700;" }, m.id));
+      if (m.display_name && m.display_name !== m.id) {
+        idTd.appendChild(mk("div", { style: "font-size:12px;color:var(--muted);" }, m.display_name));
+      }
+      tr.appendChild(idTd);
+
+      const modeTd = mk("td");
+      modeTd.appendChild(mk("span", { class: "pill " + (m.kind === "composite" ? "ok" : "muted") }, m.kind === "composite" ? "сборная" : "отдельная"));
+      modeTd.appendChild(mk("div", { class: "mono", style: "margin-top:4px;color:var(--muted);" }, m.strategy === "round_robin" ? "round-robin внутри P" : "строго по порядку P"));
+      modeTd.appendChild(mk("div", { class: "mono", style: "color:var(--muted);" }, `default cooldown=${m.default_cooldown_seconds}s`));
+      tr.appendChild(modeTd);
+
+      const targetsTd = mk("td");
+      for (const t of m.targets || []) {
+        const chip = mk("div", { class: "target-chip" });
+        chip.appendChild(mk("span", { class: "pill muted" }, `P${t.priority}`));
+        chip.appendChild(mk("span", { class: "mono", style: "font-weight:600;" }, t.provider_id));
+        chip.appendChild(mk("span", { class: "mono" }, t.provider_model || "(default)"));
+        if (!t.enabled || !t.backend_enabled) {
+          chip.appendChild(mk("span", { class: "pill muted" }, "выкл"));
+        } else if (t.cooling_until) {
+          chip.appendChild(mk("span", { class: "pill bad" }, `охлаждение ${fmtDuration(t.remaining_seconds)}`));
+          chip.appendChild(mk("button", {
+            class: "btn sm ok",
+            onclick: async () => {
+              await api("/cooldowns/release", { method: "POST", json: { provider_id: t.provider_id, provider_model: t.provider_model || "" } });
+              showToast(`Охлаждение снято (${t.provider_id})`);
+              refreshAll();
+            }
+          }, "Снять"));
+        } else if (!t.backend_ready) {
+          chip.appendChild(mk("span", { class: "pill degraded" }, "воркер недоступен"));
+        } else {
+          chip.appendChild(mk("span", { class: "pill ok" }, "ready"));
+        }
+        targetsTd.appendChild(chip);
+      }
+      tr.appendChild(targetsTd);
+
+      const availTd = mk("td");
+      if (m.available) {
+        availTd.appendChild(mk("span", { class: "pill ok" }, `доступна (${m.ready_targets})`));
+      } else if (m.earliest_reset) {
+        availTd.appendChild(mk("span", { class: "pill bad" }, `всё остывает (${fmtDuration(Math.max(1, m.earliest_reset - Math.floor(Date.now()/1000)))})`));
+      } else {
+        availTd.appendChild(mk("span", { class: "pill bad" }, "нет рабочих"));
+      }
+      tr.appendChild(availTd);
+
+      const enTd = mk("td");
+      enTd.appendChild(mk("span", { class: "pill " + (m.enabled ? "ok" : "muted") }, m.enabled ? "вкл" : "выкл"));
+      tr.appendChild(enTd);
+
+      const actTd = mk("td");
+      const row = mk("div", { class: "row" });
+      row.appendChild(mk("button", { class: "btn sm", onclick: () => openConstructorModal(m) }, "Конструктор"));
+      row.appendChild(mk("button", {
+        class: "btn sm",
+        onclick: async () => {
+          document.querySelector('[data-tab="playground"]').click();
+          await loadModelsForPlayground();
+          $("pg-model").value = m.id;
+        }
+      }, "Тест"));
+      row.appendChild(mk("button", {
+        class: "btn sm " + (m.enabled ? "danger" : "ok"),
+        onclick: async () => {
+          await api(`/catalog/${encodeURIComponent(m.id)}`, { method: "PATCH", json: { enabled: !m.enabled } });
+          showToast(`Модель ${m.id} ${!m.enabled ? "включена" : "отключена"}`);
+          refreshAll();
+        }
+      }, m.enabled ? "Отключить" : "Включить"));
+      row.appendChild(mk("button", {
+        class: "btn sm danger",
+        onclick: async () => {
+          if (!confirm(`Удалить опубликованную модель ${m.id}?`)) return;
+          await api(`/catalog/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+          showToast(`Модель ${m.id} удалена из /v1/models`);
+          refreshAll();
+        }
+      }, "Удалить"));
+      actTd.appendChild(row);
+      tr.appendChild(actTd);
+      tbody.appendChild(tr);
+    }
+  }
+  $("btn-reload-catalog").onclick = loadCatalog;
+
+  async function ensureProvidersLoaded() {
+    if (cachedProviders.length === 0) {
+      const res = await api("/providers");
+      cachedProviders = res.data || [];
+      for (const p of cachedProviders) {
+        if (p.cached_models && p.cached_models.length) {
+          discoveredCache[p.id] = p.cached_models;
+        }
+      }
+    }
+    return cachedProviders;
+  }
+
+  async function openConstructorModal(existing = null) {
+    await ensureProvidersLoaded();
+    if (cachedProviders.length === 0) {
+      showToast("Сначала подключите хотя бы одного провайдера", true);
+      return;
+    }
+
+    const isEdit = !!existing;
+    const form = mk("form");
+    const fId = mk("input", { type: "text", value: existing ? existing.id : "", placeholder: "например: agy-pool или smart-code", required: true });
+    if (isEdit) fId.disabled = true;
+    const fName = mk("input", { type: "text", value: existing ? (existing.display_name || "") : "", placeholder: "Человекочитаемое название" });
+    const fStrategy = mk("select");
+    for (const [val, lbl] of [
+      ["priority_order", "По приоритету и порядку (основной -> резерв по лимиту)"],
+      ["round_robin", "Round-Robin внутри одинакового приоритета + возврат на главный приоритет"]
+    ]) {
+      const opt = mk("option", { value: val }, lbl);
+      if (existing && existing.strategy === val) opt.selected = true;
+      fStrategy.appendChild(opt);
+    }
+    const fCooldown = mk("input", { type: "number", value: existing ? existing.default_cooldown_seconds : 300, min: 1, max: 604800 });
+
+    const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
+    const topGrid = mk("div", { class: "grid-2" });
+    topGrid.appendChild(wrap("ID модели в GET /v1/models", fId));
+    topGrid.appendChild(wrap("Название", fName));
+    form.appendChild(topGrid);
+
+    const optGrid = mk("div", { class: "grid-2" });
+    optGrid.appendChild(wrap("Логика выбора", fStrategy));
+    optGrid.appendChild(wrap("Охлаждение по умолчанию (сек)", fCooldown));
+    form.appendChild(optGrid);
+
+    // Target rows state
+    const rowsData = existing && existing.targets && existing.targets.length
+      ? existing.targets.map((t) => ({
+          provider_id: t.provider_id,
+          provider_model: t.provider_model || "",
+          priority: t.priority || 1,
+          enabled: t.enabled !== false
+        }))
+      : [{ provider_id: cachedProviders[0].id, provider_model: "", priority: 1, enabled: true }];
+
+    const rowsWrap = mk("div");
+
+    // Quick helper bar to add all providers of a given type (e.g. all 3 agy-*!)
+    const quickBar = mk("div", { class: "card", style: "padding:10px;margin-bottom:12px;background:var(--code-bg);" });
+    quickBar.appendChild(mk("div", { style: "font-size:12px;color:var(--muted);margin-bottom:6px;" }, "Быстро подставить пул однотипных провайдеров (например, все 3× agy):"));
+    const qRow = mk("div", { class: "row" });
+    const qType = mk("select");
+    for (const [val, lbl] of [["antigravity", "Все agy-*"], ["codex", "Все codex-*"], ["claude", "Все claude-*"], ["gemini", "Все gemini-*"], ["ollama", "Все ollama"]]) {
+      qType.appendChild(mk("option", { value: val }, lbl));
+    }
+    const qModel = mk("input", { type: "text", placeholder: "Модель провайдера (опц., напр. gemini-2.5-pro)", style: "flex:1;min-width:190px;" });
+    const qPrio = mk("input", { type: "number", value: 1, min: 1, style: "width:70px;", title: "Приоритет" });
+    const qBtn = mk("button", {
+      type: "button",
+      class: "btn sm",
+      onclick: () => {
+        const matches = cachedProviders.filter((p) => p.provider === qType.value);
+        if (matches.length === 0) {
+          showToast(`Провайдеры типа ${qType.value} не найдены`, true);
+          return;
+        }
+        const mVal = qModel.value.trim();
+        const pr = Math.max(1, parseInt(qPrio.value, 10) || 1);
+        for (const p of matches) {
+          const exists = rowsData.some((r) => r.provider_id === p.id && r.provider_model === mVal);
+          if (!exists) {
+            rowsData.push({ provider_id: p.id, provider_model: mVal, priority: pr, enabled: true });
+          }
+        }
+        renderRows();
+      }
+    }, "+ Добавить группу");
+    qRow.appendChild(qType);
+    qRow.appendChild(qModel);
+    qRow.appendChild(mk("span", { style: "font-size:12px;color:var(--muted);" }, "P:"));
+    qRow.appendChild(qPrio);
+    qRow.appendChild(qBtn);
+    quickBar.appendChild(qRow);
+    form.appendChild(quickBar);
+
+    function modelOptionsForProvider(provID) {
+      const list = discoveredCache[provID] || [];
+      return list.map((x) => x.model_name);
+    }
+
+    async function fetchModelsForSelect(provID, datalistEl) {
+      if (!discoveredCache[provID]) {
+        try {
+          const r = await api(`/providers/${encodeURIComponent(provID)}/models`);
+          discoveredCache[provID] = r.models || [];
+        } catch (_) {
+          discoveredCache[provID] = [];
+        }
+      }
+      clearEl(datalistEl);
+      for (const name of modelOptionsForProvider(provID)) {
+        datalistEl.appendChild(mk("option", { value: name }));
+      }
+    }
+
+    function renderRows() {
+      clearEl(rowsWrap);
+      rowsData.forEach((rowObj, idx) => {
+        const rowEl = mk("div", { class: "target-row" });
+
+        const selProv = mk("select");
+        for (const p of cachedProviders) {
+          const opt = mk("option", { value: p.id }, `${p.id} (${p.provider})`);
+          if (p.id === rowObj.provider_id) opt.selected = true;
+          selProv.appendChild(opt);
+        }
+
+        const dlId = `dl-target-${idx}-${Math.random().toString(36).slice(2, 7)}`;
+        const dl = mk("datalist", { id: dlId });
+        for (const name of modelOptionsForProvider(rowObj.provider_id)) {
+          dl.appendChild(mk("option", { value: name }));
+        }
+        const modelBox = mk("div", { class: "row", style: "gap:4px;" });
+        const inpModel = mk("input", {
+          type: "text",
+          list: dlId,
+          value: rowObj.provider_model || "",
+          placeholder: "модель провайдера (пусто = по умолчанию)",
+          style: "flex:1;min-width:150px;"
+        });
+        inpModel.oninput = () => { rowObj.provider_model = inpModel.value; };
+        const refreshModelBtn = mk("button", {
+          type: "button",
+          class: "btn sm",
+          title: "Обновить список моделей с провайдера",
+          onclick: async () => {
+            try {
+              const r = await api(`/providers/${encodeURIComponent(rowObj.provider_id)}/models?refresh=1`);
+              discoveredCache[rowObj.provider_id] = r.models || [];
+              await fetchModelsForSelect(rowObj.provider_id, dl);
+              showToast(r.warning ? `Внимание: ${r.warning}` : `Найдено моделей: ${(r.models || []).length}`);
+            } catch (err) { showToast(err.message, true); }
+          }
+        }, "↻");
+        modelBox.appendChild(inpModel);
+        modelBox.appendChild(refreshModelBtn);
+        modelBox.appendChild(dl);
+
+        selProv.onchange = () => {
+          rowObj.provider_id = selProv.value;
+          fetchModelsForSelect(rowObj.provider_id, dl);
+        };
+        if (!discoveredCache[rowObj.provider_id]) {
+          fetchModelsForSelect(rowObj.provider_id, dl);
+        }
+
+        const prioInp = mk("input", { type: "number", min: 1, value: rowObj.priority || 1, title: "Приоритет (1 = главный)" });
+        prioInp.oninput = () => { rowObj.priority = Math.max(1, parseInt(prioInp.value, 10) || 1); };
+
+        const ctrl = mk("div", { class: "row", style: "gap:4px;" });
+        const chk = mk("input", { type: "checkbox", checked: rowObj.enabled, title: "Включён в пул" });
+        chk.onchange = () => { rowObj.enabled = chk.checked; };
+        ctrl.appendChild(chk);
+        ctrl.appendChild(mk("button", {
+          type: "button", class: "btn sm", disabled: idx === 0,
+          onclick: () => { const tmp = rowsData[idx-1]; rowsData[idx-1] = rowsData[idx]; rowsData[idx] = tmp; renderRows(); }
+        }, "↑"));
+        ctrl.appendChild(mk("button", {
+          type: "button", class: "btn sm", disabled: idx === rowsData.length - 1,
+          onclick: () => { const tmp = rowsData[idx+1]; rowsData[idx+1] = rowsData[idx]; rowsData[idx] = tmp; renderRows(); }
+        }, "↓"));
+        ctrl.appendChild(mk("button", {
+          type: "button", class: "btn sm danger", disabled: rowsData.length <= 1,
+          onclick: () => { rowsData.splice(idx, 1); renderRows(); }
+        }, "✕"));
+
+        rowEl.appendChild(selProv);
+        rowEl.appendChild(modelBox);
+        rowEl.appendChild(prioInp);
+        rowEl.appendChild(ctrl);
+        rowsWrap.appendChild(rowEl);
+      });
+    }
+
+    renderRows();
+    const hdr = mk("div", { class: "card-head", style: "margin-top:6px;" });
+    hdr.appendChild(mk("label", { style: "font-size:12px;color:var(--muted);" }, "Провайдеры, модели и приоритеты (1 = использовать первым):"));
+    hdr.appendChild(mk("button", {
+      type: "button",
+      class: "btn sm",
+      onclick: () => {
+        rowsData.push({ provider_id: cachedProviders[0].id, provider_model: "", priority: 1, enabled: true });
+        renderRows();
+      }
+    }, "+ Добавить строку"));
+    form.appendChild(hdr);
+    form.appendChild(rowsWrap);
+
+    const submitRow = mk("div", { class: "row", style: "margin-top:12px;justify-content:flex-end;" });
+    submitRow.appendChild(mk("button", { type: "button", class: "btn", onclick: closeModal }, "Отмена"));
+    submitRow.appendChild(mk("button", { type: "submit", class: "btn primary" }, isEdit ? "Сохранить модель" : "Создать и опубликовать"));
+    form.appendChild(submitRow);
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const payload = {
+        id: fId.value.trim(),
+        display_name: fName.value.trim(),
+        strategy: fStrategy.value,
+        default_cooldown_seconds: Math.max(1, parseInt(fCooldown.value, 10) || 300),
+        enabled: existing ? existing.enabled : true,
+        targets: rowsData.map((r, i) => ({
+          provider_id: r.provider_id,
+          provider_model: r.provider_model.trim(),
+          priority: Math.max(1, parseInt(r.priority, 10) || 1),
+          position: i,
+          enabled: !!r.enabled
+        }))
+      };
+      try {
+        if (isEdit) {
+          await api(`/catalog/${encodeURIComponent(existing.id)}`, { method: "PUT", json: payload });
+          showToast(`Модель ${existing.id} обновлена`);
+        } else {
+          await api("/catalog", { method: "POST", json: payload });
+          showToast(`Сборная модель ${payload.id} опубликована`);
+        }
+        closeModal();
+        refreshAll();
+      } catch (err) { showToast(err.message, true); }
+    };
+
+    openModal(isEdit ? `Конструктор: ${existing.id}` : "Конструктор модели", form);
+  }
+  $("btn-open-constructor").onclick = () => openConstructorModal(null);
+
+  // PROVIDERS & DISCOVERY
+  async function loadProviders() {
+    const res = await api("/providers");
+    cachedProviders = res.data || [];
     const tbody = $("models-tbody");
     clearEl(tbody);
-    for (const m of res.data || []) {
+    for (const m of cachedProviders) {
+      if (m.cached_models && m.cached_models.length) {
+        discoveredCache[m.id] = m.cached_models;
+      }
       const tr = mk("tr");
       const idTd = mk("td", { class: "mono" });
-      idTd.appendChild(mk("div", {}, m.id));
+      idTd.appendChild(mk("div", { style: "font-weight:700;" }, m.id));
       if (m.dynamic) idTd.appendChild(mk("span", { class: "pill muted" }, "dynamic"));
       tr.appendChild(idTd);
 
@@ -809,56 +1256,64 @@ Ollama:
       if (m.error) stTd.appendChild(mk("div", { class: "mono", style: "color:#fca5a5;margin-top:4px;max-width:260px;" }, m.error));
       tr.appendChild(stTd);
 
-      const enTd = mk("td");
-      enTd.appendChild(mk("span", { class: "pill " + (m.enabled ? "ok" : "muted") }, m.enabled ? "вкл" : "выкл"));
-      tr.appendChild(enTd);
+      const visTd = mk("td");
+      visTd.appendChild(mk("span", { class: "pill " + (m.enabled ? "ok" : "muted") }, m.enabled ? "вкл" : "выкл"));
+      visTd.appendChild(mk("div", { style: "margin-top:4px;" }, "")).appendChild(
+        mk("span", { class: "pill " + (m.public ? "degraded" : "muted") }, m.public ? "public: да" : "скрыт (провайдер)")
+      );
+      tr.appendChild(visTd);
 
       tr.appendChild(mk("td", { class: "mono" }, `timeout=${m.timeout_seconds}s\nmax=${m.max_concurrent}`));
 
-      const caps = [];
-      if (m.capabilities.streaming) caps.push("stream");
-      if (m.capabilities.session_resume) caps.push("resume");
-      if (m.capabilities.file_input) caps.push("files");
-      if (m.capabilities.token_usage) caps.push("usage");
-      tr.appendChild(mk("td", { class: "mono" }, caps.join(", ")));
+      const infoTd = mk("td");
+      const cachedCount = (m.cached_models || []).length;
+      infoTd.appendChild(mk("div", { class: "mono" }, `Моделей в кеше: ${cachedCount}`));
+      for (const cd of (m.active_cooldowns || [])) {
+        const cdChip = mk("div", { class: "target-chip", style: "margin-top:4px;" });
+        cdChip.appendChild(mk("span", { class: "pill bad" }, `cooldown ${fmtDuration(cd.remaining_seconds)}`));
+        cdChip.appendChild(mk("span", { class: "mono" }, cd.provider_model || "(default)"));
+        cdChip.appendChild(mk("button", {
+          class: "btn sm ok",
+          onclick: async () => {
+            await api("/cooldowns/release", { method: "POST", json: { provider_id: m.id, provider_model: cd.provider_model || "" } });
+            showToast("Охлаждение снято");
+            refreshAll();
+          }
+        }, "Снять"));
+        infoTd.appendChild(cdChip);
+      }
+      tr.appendChild(infoTd);
 
       const actTd = mk("td");
       const row = mk("div", { class: "row" });
+      row.appendChild(mk("button", { class: "btn sm primary", onclick: () => openProviderModelsModal(m) }, "Выбрать модели"));
       row.appendChild(mk("button", {
         class: "btn sm",
         onclick: async () => {
           try {
             const p = await api(`/models/${encodeURIComponent(m.id)}/check`, { method: "POST" });
             showToast(`${m.id}: ${p.ready ? "ready" : p.error}`);
-            loadModels();
+            loadProviders();
           } catch (err) { showToast(err.message, true); }
         }
       }, "Проверить"));
       row.appendChild(mk("button", {
         class: "btn sm " + (m.enabled ? "danger" : "ok"),
         onclick: async () => {
-          try {
-            await api(`/models/${encodeURIComponent(m.id)}`, { method: "PATCH", json: { enabled: !m.enabled } });
-            showToast(`Модель ${m.id} ${!m.enabled ? "включена" : "отключена"}`);
-            loadModels();
-            loadStatus();
-          } catch (err) { showToast(err.message, true); }
+          await api(`/models/${encodeURIComponent(m.id)}`, { method: "PATCH", json: { enabled: !m.enabled } });
+          showToast(`Провайдер ${m.id} ${!m.enabled ? "включён" : "отключён"}`);
+          refreshAll();
         }
-      }, m.enabled ? "Отключить" : "Включить"));
-      row.appendChild(mk("button", {
-        class: "btn sm",
-        onclick: () => openEditModelModal(m)
-      }, "Изменить"));
+      }, m.enabled ? "Откл" : "Вкл"));
+      row.appendChild(mk("button", { class: "btn sm", onclick: () => openEditModelModal(m) }, "Настройки"));
       if (m.dynamic) {
         row.appendChild(mk("button", {
           class: "btn sm danger",
           onclick: async () => {
-            if (!confirm(`Удалить динамическую модель ${m.id}?`)) return;
-            try {
-              await api(`/models/${encodeURIComponent(m.id)}`, { method: "DELETE" });
-              showToast(`Модель ${m.id} удалена`);
-              loadModels();
-            } catch (err) { showToast(err.message, true); }
+            if (!confirm(`Удалить провайдера ${m.id}?`)) return;
+            await api(`/models/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+            showToast(`Провайдер ${m.id} удалён`);
+            refreshAll();
           }
         }, "Удалить"));
       }
@@ -868,20 +1323,168 @@ Ollama:
     }
   }
 
+  async function openProviderModelsModal(m) {
+    const container = mk("div");
+    const statusLine = mk("div", { class: "row", style: "justify-content:space-between;margin-bottom:10px;" });
+    const srcSpan = mk("span", { class: "pill muted" }, "Загрузка списка моделей...");
+    const btnRefresh = mk("button", { type: "button", class: "btn sm" }, "↻ Обновить с CLI / Ollama");
+    statusLine.appendChild(srcSpan);
+    statusLine.appendChild(btnRefresh);
+    container.appendChild(statusLine);
+
+    const warnBox = mk("div", { class: "mono hidden", style: "color:#fcd34d;margin-bottom:10px;padding:8px;background:rgba(245,158,11,.1);border-radius:6px;" });
+    container.appendChild(warnBox);
+
+    // Custom manual add bar
+    const customForm = mk("form", { class: "row", style: "margin-bottom:12px;" });
+    const fCustom = mk("input", { type: "text", placeholder: "Добавить модель вручную (напр. gemini-2.5-pro / gpt-5.4)", style: "flex:1;" });
+    customForm.appendChild(fCustom);
+    customForm.appendChild(mk("button", { type: "submit", class: "btn sm" }, "+ Добавить в список"));
+    container.appendChild(customForm);
+
+    const listForm = mk("form");
+    const tableWrap = mk("div", { class: "table-wrap", style: "max-height:340px;overflow:auto;margin-bottom:12px;" });
+    const tbl = mk("table");
+    tbl.appendChild(mk("thead")).appendChild(mk("tr")).append(
+      mk("th", {}, "Выбрать"),
+      mk("th", {}, "Модель провайдера"),
+      mk("th", {}, "Опубликовать под ID (для /v1/models)"),
+      mk("th", {}, "Источник")
+    );
+    const tbody = mk("tbody");
+    tbl.appendChild(tbody);
+    tableWrap.appendChild(tbl);
+    listForm.appendChild(tableWrap);
+
+    const footer = mk("div", { class: "row", style: "justify-content:flex-end;" });
+    footer.appendChild(mk("button", { type: "button", class: "btn", onclick: closeModal }, "Закрыть"));
+    footer.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Опубликовать выбранные как отдельные модели"));
+    listForm.appendChild(footer);
+    container.appendChild(listForm);
+
+    let rowsState = [];
+    function renderDiscoveryTable(res) {
+      srcSpan.textContent = `Источник: ${res.source || "-"} · найдено: ${(res.models || []).length}`;
+      if (res.warning) {
+        warnBox.textContent = `Предупреждение CLI: ${res.warning}`;
+        warnBox.classList.remove("hidden");
+      } else {
+        warnBox.classList.add("hidden");
+      }
+      discoveredCache[m.id] = res.models || [];
+      clearEl(tbody);
+      rowsState = (res.models || []).map((item) => {
+        const cleanSlug = item.model_name.replace(/[^a-zA-Z0-9._:-]+/g, "-").replace(/^-|-$/g, "");
+        return {
+          selected: false,
+          provider_model: item.model_name,
+          display_name: item.display_name || item.model_name,
+          pub_id: `${m.id}-${cleanSlug}`.slice(0, 120),
+          source: item.source
+        };
+      });
+      if (rowsState.length === 0) {
+        const tr = mk("tr");
+        const td = mk("td", { colspan: "4", style: "color:var(--muted);" }, "Модели не обнаружены. Введите модель вручную выше или авторизуйте контейнер.");
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      for (const st of rowsState) {
+        const tr = mk("tr");
+        const chk = mk("input", { type: "checkbox", checked: st.selected });
+        chk.onchange = () => { st.selected = chk.checked; };
+        tr.appendChild(mk("td")).appendChild(chk);
+
+        const nameTd = mk("td");
+        nameTd.appendChild(mk("div", { class: "mono", style: "font-weight:600;" }, st.provider_model));
+        if (st.display_name && st.display_name !== st.provider_model) {
+          nameTd.appendChild(mk("div", { style: "font-size:11px;color:var(--muted);" }, st.display_name));
+        }
+        tr.appendChild(nameTd);
+
+        const idInp = mk("input", { type: "text", value: st.pub_id, style: "width:100%;" });
+        idInp.oninput = () => { st.pub_id = idInp.value; };
+        tr.appendChild(mk("td")).appendChild(idInp);
+
+        tr.appendChild(mk("td")).appendChild(mk("span", { class: "pill muted" }, st.source || "-"));
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function fetchDiscovery(refresh) {
+      srcSpan.textContent = "Опрос провайдера...";
+      try {
+        const r = await api(`/providers/${encodeURIComponent(m.id)}/models${refresh ? "?refresh=1" : ""}`);
+        renderDiscoveryTable(r);
+      } catch (err) {
+        srcSpan.textContent = "Ошибка опроса";
+        showToast(err.message, true);
+      }
+    }
+
+    btnRefresh.onclick = () => fetchDiscovery(true);
+    customForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const val = fCustom.value.trim();
+      if (!val) return;
+      try {
+        await api(`/providers/${encodeURIComponent(m.id)}/models`, { method: "POST", json: { model_name: val } });
+        fCustom.value = "";
+        await fetchDiscovery(false);
+        showToast(`Добавлена модель ${val}`);
+      } catch (err) { showToast(err.message, true); }
+    };
+
+    listForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const picked = rowsState.filter((r) => r.selected);
+      if (picked.length === 0) {
+        showToast("Отметьте хотя бы одну модель галочкой", true);
+        return;
+      }
+      try {
+        const res = await api(`/providers/${encodeURIComponent(m.id)}/publish`, {
+          method: "POST",
+          json: {
+            items: picked.map((p) => ({
+              id: p.pub_id.trim(),
+              provider_model: p.provider_model,
+              display_name: p.display_name
+            }))
+          }
+        });
+        closeModal();
+        showToast(`Опубликовано моделей: ${(res.data || []).length}`);
+        document.querySelector('[data-tab="catalog"]').click();
+        refreshAll();
+      } catch (err) { showToast(err.message, true); }
+    };
+
+    openModal(`Выбрать модели провайдера: ${m.id} (${m.provider})`, container);
+    fetchDiscovery(false);
+  }
+
   function openEditModelModal(m) {
     const form = mk("form");
     const fTimeout = mk("input", { type: "number", value: m.timeout_seconds, min: 1, max: 86400 });
     const fMax = mk("input", { type: "number", value: m.max_concurrent, min: 1, max: 256 });
-    const fVariant = mk("input", { type: "text", value: m.model || "", placeholder: "модель провайдера (напр. qwen3 / gpt-5.3-codex)" });
+    const fVariant = mk("input", { type: "text", value: m.model || "", placeholder: "модель по умолчанию провайдера (опц.)" });
     const fBaseURL = mk("input", { type: "text", value: m.base_url || "", placeholder: "http://127.0.0.1:11434" });
     const fWorkerURL = mk("input", { type: "text", value: m.worker_url || "", placeholder: "http://agy-1:9090" });
+    const fPublic = mk("input", { type: "checkbox", checked: m.public });
 
     const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
     form.appendChild(wrap("Timeout (сек)", fTimeout));
     form.appendChild(wrap("Max Concurrent", fMax));
-    form.appendChild(wrap("Имя модели провайдера", fVariant));
+    form.appendChild(wrap("Модель провайдера по умолчанию", fVariant));
     if (m.provider === "ollama") form.appendChild(wrap("Ollama Base URL", fBaseURL));
     if (m.worker_url) form.appendChild(wrap("Worker URL", fWorkerURL));
+
+    const pubWrap = mk("div", { class: "field row" });
+    pubWrap.appendChild(fPublic);
+    pubWrap.appendChild(mk("label", { style: "margin:0;" }, "Публиковать сам провайдер напрямую в GET /v1/models (public)"));
+    form.appendChild(pubWrap);
 
     form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Сохранить"));
     form.onsubmit = async (e) => {
@@ -889,7 +1492,8 @@ Ollama:
       const payload = {
         timeout_seconds: parseInt(fTimeout.value, 10),
         max_concurrent: parseInt(fMax.value, 10),
-        model: fVariant.value
+        model: fVariant.value,
+        public: fPublic.checked
       };
       if (m.provider === "ollama") payload.base_url = fBaseURL.value;
       if (m.worker_url) payload.worker_url = fWorkerURL.value;
@@ -897,16 +1501,16 @@ Ollama:
         await api(`/models/${encodeURIComponent(m.id)}`, { method: "PATCH", json: payload });
         closeModal();
         showToast(`Настройки ${m.id} сохранены`);
-        loadModels();
+        refreshAll();
       } catch (err) { showToast(err.message, true); }
     };
-    openModal(`Редактировать модель: ${m.id}`, form);
+    openModal(`Настройки провайдера: ${m.id}`, form);
   }
 
   $("btn-check-all-models").onclick = async () => {
-    await loadModels();
+    await loadProviders();
     await loadStatus();
-    showToast("Готовность всех моделей обновлена");
+    showToast("Готовность всех провайдеров обновлена");
   };
 
   $("btn-open-add-model").onclick = () => {
@@ -919,8 +1523,7 @@ Ollama:
       ["codex", "codex (Docker worker codex)"],
       ["gemini", "gemini (Docker worker gemini)"]
     ]) {
-      const opt = mk("option", { value: val }, label);
-      fProvider.appendChild(opt);
+      fProvider.appendChild(mk("option", { value: val }, label));
     }
     const fId = mk("input", { type: "text", placeholder: "remote-ollama или agy-4", required: true });
     const fUrl = mk("input", { type: "text", value: "http://10.0.0.50:11434", placeholder: "http://10.0.0.50:11434" });
@@ -928,6 +1531,7 @@ Ollama:
     const fModel = mk("input", { type: "text", placeholder: "qwen3 (для ollama обязательно, для CLI опционально)" });
     const fTime = mk("input", { type: "number", value: 600, min: 1 });
     const fMax = mk("input", { type: "number", value: 4, min: 1 });
+    const fPublic = mk("input", { type: "checkbox", checked: false });
     const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
 
     const baseField = wrap("Ollama Base URL", fUrl);
@@ -943,13 +1547,18 @@ Ollama:
     fProvider.onchange = syncFields;
     syncFields();
 
-    form.appendChild(wrap("Провайдер", fProvider));
-    form.appendChild(wrap("ID модели в шлюзе", fId));
+    form.appendChild(wrap("Тип провайдера", fProvider));
+    form.appendChild(wrap("ID провайдера в шлюзе", fId));
     form.appendChild(baseField);
     form.appendChild(workerField);
-    form.appendChild(wrap("Имя модели провайдера", fModel));
+    form.appendChild(wrap("Модель по умолчанию", fModel));
     form.appendChild(wrap("Timeout (сек)", fTime));
     form.appendChild(wrap("Max Concurrent", fMax));
+    const pubRow = mk("div", { class: "field row" });
+    pubRow.appendChild(fPublic);
+    pubRow.appendChild(mk("label", { style: "margin:0;" }, "Сразу показывать в GET /v1/models (иначе скрыт как провайдер)"));
+    form.appendChild(pubRow);
+
     form.appendChild(mk("button", { type: "submit", class: "btn primary" }, "Добавить"));
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -959,22 +1568,19 @@ Ollama:
         provider,
         model: fModel.value.trim(),
         timeout_seconds: parseInt(fTime.value, 10),
-        max_concurrent: parseInt(fMax.value, 10)
+        max_concurrent: parseInt(fMax.value, 10),
+        public: fPublic.checked
       };
-      if (provider === "ollama") {
-        payload.base_url = fUrl.value.trim();
-      } else {
-        payload.worker_url = fWorkerUrl.value.trim();
-      }
+      if (provider === "ollama") payload.base_url = fUrl.value.trim();
+      else payload.worker_url = fWorkerUrl.value.trim();
       try {
         await api("/models", { method: "POST", json: payload });
         closeModal();
-        showToast(`Модель ${fId.value.trim()} добавлена`);
-        loadModels();
-        loadStatus();
+        showToast(`Провайдер ${payload.id} добавлен`);
+        refreshAll();
       } catch (err) { showToast(err.message, true); }
     };
-    openModal("Добавить модель (Ollama / Worker)", form);
+    openModal("Добавить провайдера (Ollama / Worker)", form);
   };
 
   // RUNS
@@ -986,7 +1592,10 @@ Ollama:
     for (const r of res.data || []) {
       const tr = mk("tr");
       tr.appendChild(mk("td", { class: "mono" }, r.id));
-      tr.appendChild(mk("td", { class: "mono" }, `${r.model}\n(${r.provider})`));
+      const execLabel = r.target_provider_id
+        ? `${r.model}\n-> ${r.target_provider_id}${r.target_model ? " (" + r.target_model + ")" : ""} [${r.provider}]`
+        : `${r.model}\n(${r.provider})`;
+      tr.appendChild(mk("td", { class: "mono" }, execLabel));
       tr.appendChild(mk("td", { class: "mono" }, r.owner_id));
       const stCls = r.status === "completed" ? "ok" : (r.status === "running" || r.status === "queued") ? "degraded" : "bad";
       tr.appendChild(mk("td", {}, "")).appendChild(mk("span", { class: "pill " + stCls }, r.status));
@@ -999,22 +1608,18 @@ Ollama:
       row.appendChild(mk("button", {
         class: "btn sm",
         onclick: async () => {
-          try {
-            const d = await api(`/runs/${encodeURIComponent(r.id)}`);
-            openModal(`Run ${r.id}`, JSON.stringify(d, null, 2));
-          } catch (err) { showToast(err.message, true); }
+          const d = await api(`/runs/${encodeURIComponent(r.id)}`);
+          openModal(`Run ${r.id}`, JSON.stringify(d, null, 2));
         }
       }, "Детали"));
       if (r.live_active || r.status === "running") {
         row.appendChild(mk("button", {
           class: "btn sm danger",
           onclick: async () => {
-            try {
-              await api(`/runs/${encodeURIComponent(r.id)}/cancel`, { method: "POST" });
-              showToast(`Отправлен сигнал остановки ${r.id}`);
-              loadRuns();
-              loadStatus();
-            } catch (err) { showToast(err.message, true); }
+            await api(`/runs/${encodeURIComponent(r.id)}/cancel`, { method: "POST" });
+            showToast(`Отправлен сигнал остановки ${r.id}`);
+            loadRuns();
+            loadStatus();
           }
         }, "Остановить"));
       }
@@ -1035,7 +1640,8 @@ Ollama:
       const tr = mk("tr");
       tr.appendChild(mk("td", { class: "mono" }, s.gateway_session_id));
       tr.appendChild(mk("td", { class: "mono" }, s.owner_id));
-      tr.appendChild(mk("td", { class: "mono" }, `${s.provider} / ${s.model}`));
+      const targetStr = s.target_provider_id ? `${s.model} (${s.target_provider_id}${s.target_model ? " · " + s.target_model : ""})` : `${s.provider} / ${s.model}`;
+      tr.appendChild(mk("td", { class: "mono" }, targetStr));
       tr.appendChild(mk("td", { class: "mono" }, String(s.turn_count)));
       tr.appendChild(mk("td", { class: "mono truncate", title: s.provider_session_id || "" }, s.provider_session_id || "-"));
       tr.appendChild(mk("td", { class: "mono" }, s.last_response_id || "-"));
@@ -1045,10 +1651,8 @@ Ollama:
       row.appendChild(mk("button", {
         class: "btn sm",
         onclick: async () => {
-          try {
-            const d = await api(`/sessions/${encodeURIComponent(s.gateway_session_id)}`);
-            openModal(`Сессия ${s.gateway_session_id}`, JSON.stringify(d, null, 2));
-          } catch (err) { showToast(err.message, true); }
+          const d = await api(`/sessions/${encodeURIComponent(s.gateway_session_id)}`);
+          openModal(`Сессия ${s.gateway_session_id}`, JSON.stringify(d, null, 2));
         }
       }, "История"));
       if (s.last_response_id) {
@@ -1066,12 +1670,10 @@ Ollama:
         class: "btn sm danger",
         onclick: async () => {
           if (!confirm(`Удалить сессию ${s.gateway_session_id}?`)) return;
-          try {
-            await api(`/sessions/${encodeURIComponent(s.gateway_session_id)}`, { method: "DELETE" });
-            showToast("Сессия удалена");
-            loadSessions();
-            loadStatus();
-          } catch (err) { showToast(err.message, true); }
+          await api(`/sessions/${encodeURIComponent(s.gateway_session_id)}`, { method: "DELETE" });
+          showToast("Сессия удалена");
+          loadSessions();
+          loadStatus();
         }
       }, "Удалить"));
       act.appendChild(row);
@@ -1115,12 +1717,10 @@ Ollama:
       row.appendChild(mk("button", {
         class: "btn sm danger",
         onclick: async () => {
-          try {
-            await api(`/files/${encodeURIComponent(f.id)}`, { method: "DELETE" });
-            showToast(`Файл ${f.id} удалён`);
-            loadFiles();
-            loadStatus();
-          } catch (err) { showToast(err.message, true); }
+          await api(`/files/${encodeURIComponent(f.id)}`, { method: "DELETE" });
+          showToast(`Файл ${f.id} удалён`);
+          loadFiles();
+          loadStatus();
         }
       }, "Удалить"));
       act.appendChild(row);
@@ -1137,11 +1737,7 @@ Ollama:
     fd.append("owner_id", $("upload-owner").value.trim() || "admin");
     fd.append("file", fi.files[0]);
     try {
-      const resp = await fetch("/admin/api/files", {
-        method: "POST",
-        headers: { "X-Admin-UI": "1" },
-        body: fd
-      });
+      const resp = await fetch("/admin/api/files", { method: "POST", headers: { "X-Admin-UI": "1" }, body: fd });
       const data = await resp.json();
       if (!resp.ok) throw new Error((data.error && data.error.message) || "Ошибка загрузки");
       fi.value = "";
@@ -1171,24 +1767,20 @@ Ollama:
       row.appendChild(mk("button", {
         class: "btn sm " + (k.revoked ? "ok" : "danger"),
         onclick: async () => {
-          try {
-            await api(`/keys/${encodeURIComponent(k.id)}/${k.revoked ? "unrevoke" : "revoke"}`, { method: "POST" });
-            showToast(`Ключ ${k.id} ${k.revoked ? "восстановлен" : "отозван"}`);
-            loadKeys();
-            loadStatus();
-          } catch (err) { showToast(err.message, true); }
+          await api(`/keys/${encodeURIComponent(k.id)}/${k.revoked ? "unrevoke" : "revoke"}`, { method: "POST" });
+          showToast(`Ключ ${k.id} ${k.revoked ? "восстановлен" : "отозван"}`);
+          loadKeys();
+          loadStatus();
         }
       }, k.revoked ? "Восстановить" : "Отозвать"));
       row.appendChild(mk("button", {
         class: "btn sm danger",
         onclick: async () => {
           if (!confirm(`Удалить API-ключ ${k.id}?`)) return;
-          try {
-            await api(`/keys/${encodeURIComponent(k.id)}`, { method: "DELETE" });
-            showToast(`Ключ ${k.id} удалён`);
-            loadKeys();
-            loadStatus();
-          } catch (err) { showToast(err.message, true); }
+          await api(`/keys/${encodeURIComponent(k.id)}`, { method: "DELETE" });
+          showToast(`Ключ ${k.id} удалён`);
+          loadKeys();
+          loadStatus();
         }
       }, "Удалить"));
       act.appendChild(row);
@@ -1201,7 +1793,7 @@ Ollama:
     const form = mk("form");
     const fOwner = mk("input", { type: "text", placeholder: "service-kb", required: true });
     const fName = mk("input", { type: "text", placeholder: "KB Production" });
-    const fModels = mk("input", { type: "text", value: "*", placeholder: "* или codex,local-qwen" });
+    const fModels = mk("input", { type: "text", value: "*", placeholder: "* или agy-pool,smart-code" });
     const fConc = mk("input", { type: "number", value: 4, min: 1, max: 256 });
     const wrap = (lbl, inp) => { const d = mk("div", { class: "field" }); d.appendChild(mk("label", {}, lbl)); d.appendChild(inp); return d; };
     form.appendChild(wrap("Owner ID", fOwner));
@@ -1215,23 +1807,14 @@ Ollama:
       try {
         const res = await api("/keys", {
           method: "POST",
-          json: {
-            owner_id: fOwner.value.trim(),
-            name: fName.value.trim(),
-            allowed_models: models.length ? models : ["*"],
-            max_concurrent: parseInt(fConc.value, 10) || 4
-          }
+          json: { owner_id: fOwner.value.trim(), name: fName.value.trim(), allowed_models: models.length ? models : ["*"], max_concurrent: parseInt(fConc.value, 10) || 4 }
         });
         const box = mk("div");
-        box.appendChild(mk("p", { style: "color:#fcd34d;margin-top:0;" }, "Сохраните ключ сейчас — в базе хранится только SHA-256 хеш, повторно просмотреть секрет нельзя:"));
-        const pre = mk("pre", {}, res.token);
-        box.appendChild(pre);
+        box.appendChild(mk("p", { style: "color:#fcd34d;margin-top:0;" }, "Сохраните ключ сейчас — повторно просмотреть секрет нельзя:"));
+        box.appendChild(mk("pre", {}, res.token));
         box.appendChild(mk("div", { style: "margin-top:10px;" }, "")).appendChild(mk("button", {
           class: "btn primary",
-          onclick: () => {
-            navigator.clipboard && navigator.clipboard.writeText(res.token);
-            showToast("Ключ скопирован");
-          }
+          onclick: () => { navigator.clipboard && navigator.clipboard.writeText(res.token); showToast("Ключ скопирован"); }
         }, "Скопировать ключ"));
         openModal(`Ключ ${res.key.id} создан`, box);
         loadKeys();
@@ -1255,10 +1838,7 @@ Ollama:
       e.preventDefault();
       const models = fModels.value.split(",").map((s) => s.trim()).filter(Boolean);
       try {
-        await api(`/keys/${encodeURIComponent(k.id)}`, {
-          method: "PATCH",
-          json: { name: fName.value.trim(), allowed_models: models, max_concurrent: parseInt(fConc.value, 10) }
-        });
+        await api(`/keys/${encodeURIComponent(k.id)}`, { method: "PATCH", json: { name: fName.value.trim(), allowed_models: models, max_concurrent: parseInt(fConc.value, 10) } });
         closeModal();
         showToast(`Ключ ${k.id} обновлён`);
         loadKeys();
@@ -1269,11 +1849,19 @@ Ollama:
 
   // PLAYGROUND
   async function loadModelsForPlayground() {
-    const res = await api("/models");
+    const [catRes, modRes] = await Promise.all([api("/catalog"), api("/models")]);
     const sel = $("pg-model");
     const prev = sel.value;
     clearEl(sel);
-    for (const m of (res.data || []).filter((x) => x.enabled)) {
+    const seen = new Set();
+    for (const m of (catRes.data || []).filter((x) => x.enabled)) {
+      seen.add(m.id);
+      const label = m.kind === "composite"
+        ? `${m.id} [сборная · ${m.ready_targets} готово${m.cooling_targets ? ", " + m.cooling_targets + " охлажд." : ""}]`
+        : `${m.id} [отдельная · ${m.available ? "ready" : "unavailable"}]`;
+      sel.appendChild(mk("option", { value: m.id }, label));
+    }
+    for (const m of (modRes.data || []).filter((x) => x.enabled && x.public && !seen.has(x.id))) {
       sel.appendChild(mk("option", { value: m.id }, `${m.id} (${m.provider}${m.ready ? "" : " · unavailable"})`));
     }
     if (prev) sel.value = prev;
@@ -1315,6 +1903,8 @@ Ollama:
           stream: true
         })
       });
+      const usedTarget = resp.headers.get("X-Gateway-Target-Provider") || "";
+      const usedSub = resp.headers.get("X-Gateway-Target-Model") || "";
       if (!resp.ok) {
         const errTxt = await resp.text();
         let msg = errTxt;
@@ -1345,7 +1935,8 @@ Ollama:
               } else if (curEv === "response.completed" && ev.response) {
                 lastPlaygroundResponseId = ev.response.id || "";
                 const u = ev.response.usage || {};
-                $("pg-meta").textContent = `OK · ${lastPlaygroundResponseId} · ${Date.now() - t0} ms · tokens ${u.total_tokens || 0}`;
+                const targetSuffix = usedTarget ? ` · via ${usedTarget}${usedSub ? "/" + usedSub : ""}` : "";
+                $("pg-meta").textContent = `OK · ${lastPlaygroundResponseId}${targetSuffix} · ${Date.now() - t0} ms · tokens ${u.total_tokens || 0}`;
                 if (lastPlaygroundResponseId) $("btn-pg-chain").classList.remove("hidden");
               } else if (curEv === "error") {
                 out.textContent += `\n[ERROR] ${ev.message || raw}`;
@@ -1367,6 +1958,7 @@ Ollama:
       $("btn-pg-abort").classList.add("hidden");
       pgAbortCtrl = null;
       loadStatus();
+      loadCooldowns();
     }
   };
 

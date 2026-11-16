@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -38,6 +40,175 @@ func (e *Executor) Capabilities() executor.Capabilities {
 
 func (e *Executor) Check(_ context.Context) error {
 	return executor.CheckBinary(e.cfg.Executable)
+}
+
+var reAgyParenModel = regexp.MustCompile(`^([^(]+?)\s*\(([^)]+)\)\s*$`)
+
+// ListModels probes `agy models` inside the runtime environment to discover available models.
+func (e *Executor) ListModels(ctx context.Context) ([]executor.ModelDescriptor, string, error) {
+	if err := e.Check(ctx); err != nil {
+		return nil, "unavailable", err
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var stdout strings.Builder
+	res, runErr := e.procMgr.RunStream(probeCtx, process.RunSpec{
+		Executable:     e.cfg.Executable,
+		Args:           []string{"models"},
+		WorkDir:        os.TempDir(),
+		HomeDir:        e.cfg.HomeDir,
+		ExtraEnv:       e.cfg.Env,
+		MaxOutputBytes: 512 * 1024,
+		OnLine: func(line []byte) error {
+			stdout.Write(line)
+			stdout.WriteByte('\n')
+			return nil
+		},
+	})
+
+	combined := stdout.String() + "\n" + res.Stderr
+	lower := strings.ToLower(combined)
+	if strings.Contains(lower, "sign in") || strings.Contains(lower, "not logged in") || strings.Contains(lower, "unauthenticated") {
+		return nil, "auth_required", fmt.Errorf("agy requires sign-in to list models (run make agy-login): %s", firstNonEmptyLine(combined))
+	}
+
+	parsed := parseAgyModelsOutput(stdout.String())
+	if len(parsed) == 0 {
+		parsed = parseAgyModelsOutput(res.Stderr)
+	}
+	if len(parsed) == 0 && e.cfg.Model != "" {
+		parsed = append(parsed, executor.ModelDescriptor{ID: e.cfg.Model, Name: e.cfg.Model, Default: true})
+	}
+	if runErr != nil && len(parsed) == 0 {
+		return nil, "agy_models", fmt.Errorf("agy models failed: %w (%s)", runErr, firstNonEmptyLine(combined))
+	}
+	if e.cfg.Model != "" {
+		parsed = mergeConfiguredModel(parsed, e.cfg.Model)
+	}
+	return parsed, "agy_models", nil
+}
+
+func parseAgyModelsOutput(raw string) []executor.ModelDescriptor {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+		var arr []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+			Description string `json:"description"`
+			Default     bool   `json:"default"`
+		}
+		if json.Unmarshal([]byte(trimmed), &arr) == nil && len(arr) > 0 {
+			out := make([]executor.ModelDescriptor, 0, len(arr))
+			for _, it := range arr {
+				id := strings.TrimSpace(it.ID)
+				if id == "" {
+					id = strings.TrimSpace(it.Name)
+				}
+				if id == "" {
+					continue
+				}
+				name := strings.TrimSpace(it.DisplayName)
+				if name == "" {
+					name = strings.TrimSpace(it.Name)
+				}
+				out = append(out, executor.ModelDescriptor{ID: id, Name: name, Description: strings.TrimSpace(it.Description), Default: it.Default})
+			}
+			return out
+		}
+		var wrapped struct {
+			Models []struct {
+				ID          string `json:"id"`
+				Name        string `json:"name"`
+				DisplayName string `json:"displayName"`
+				Description string `json:"description"`
+				Default     bool   `json:"default"`
+			} `json:"models"`
+		}
+		if json.Unmarshal([]byte(trimmed), &wrapped) == nil && len(wrapped.Models) > 0 {
+			out := make([]executor.ModelDescriptor, 0, len(wrapped.Models))
+			for _, it := range wrapped.Models {
+				id := strings.TrimSpace(it.ID)
+				if id == "" {
+					id = strings.TrimSpace(it.Name)
+				}
+				if id == "" {
+					continue
+				}
+				name := strings.TrimSpace(it.DisplayName)
+				if name == "" {
+					name = strings.TrimSpace(it.Name)
+				}
+				out = append(out, executor.ModelDescriptor{ID: id, Name: name, Description: strings.TrimSpace(it.Description), Default: it.Default})
+			}
+			return out
+		}
+	}
+
+	seen := make(map[string]struct{})
+	var out []executor.ModelDescriptor
+	for _, line := range strings.Split(raw, "\n") {
+		s := strings.TrimSpace(line)
+		s = strings.TrimLeft(s, "*-• ")
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		low := strings.ToLower(s)
+		if strings.HasPrefix(low, "fetching") || strings.HasPrefix(low, "available") || strings.HasPrefix(low, "error:") || strings.HasPrefix(low, "usage:") || strings.HasPrefix(low, "---") || strings.HasPrefix(low, "===") || strings.HasPrefix(low, "note:") {
+			continue
+		}
+		id := s
+		name := s
+		isDefault := strings.Contains(low, "(default)") || strings.Contains(low, "[default]")
+		if m := reAgyParenModel.FindStringSubmatch(s); len(m) == 3 {
+			left := strings.TrimSpace(m[1])
+			right := strings.TrimSpace(m[2])
+			// Support both "model-id (Display Name)" and "Display Name (model-id)"
+			if strings.Contains(left, " ") && !strings.Contains(right, " ") && strings.ContainsAny(right, "-_.") {
+				id = right
+				name = left
+			} else if !strings.Contains(left, " ") {
+				id = left
+				name = right
+			}
+		} else if parts := strings.SplitN(s, " - ", 2); len(parts) == 2 {
+			id = strings.TrimSpace(parts[0])
+			name = strings.TrimSpace(parts[1])
+		}
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, executor.ModelDescriptor{ID: id, Name: name, Default: isDefault})
+	}
+	return out
+}
+
+func mergeConfiguredModel(list []executor.ModelDescriptor, cfgModel string) []executor.ModelDescriptor {
+	for _, m := range list {
+		if m.ID == cfgModel {
+			return list
+		}
+	}
+	return append([]executor.ModelDescriptor{{ID: cfgModel, Name: cfgModel, Default: true}}, list...)
+}
+
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emit executor.EventHandler) (executor.ExecuteResult, error) {

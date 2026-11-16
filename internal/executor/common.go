@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,15 +128,26 @@ func ClassifyCLIError(provider string, stderr string, err error, exitCode int) *
 	}
 
 	if containsAny(lower,
-		"quota", "resource_exhausted", "rate limit", "too many requests", "code 429",
+		"quota", "resource_exhausted", "rate limit", "rate_limit",
+		"too many requests", "code 429", "http 429", "usage limit",
+		"limit reached", "overloaded", "credit balance",
 	) {
-		return &ExecError{
+		msg := fmt.Sprintf("%s rate or quota limit reached", provider)
+		if trimmed := firstUsefulLine(stderr); trimmed != "" {
+			msg = fmt.Sprintf("%s rate or quota limit reached: %s", provider, trimmed)
+		}
+		execErr := &ExecError{
 			Kind:     ErrRateLimit,
 			Code:     "cli_rate_limited",
-			Message:  fmt.Sprintf("%s rate or quota limit reached", provider),
+			Message:  msg,
 			ExitCode: exitCode,
 			Cause:    err,
 		}
+		if d, src := ParseCooldown(stderr, nil, 0); d > 0 && src == "parsed" {
+			execErr.RetryAfterSeconds = int64(math.Ceil(d.Seconds()))
+			execErr.CooldownSource = src
+		}
+		return execErr
 	}
 
 	msg := fmt.Sprintf("%s execution failed (exit code %d)", provider, exitCode)

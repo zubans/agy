@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -68,6 +69,62 @@ func (e *Executor) Check(ctx context.Context) error {
 	return nil
 }
 
+// ListModels fetches available pulled models from Ollama GET /api/tags.
+func (e *Executor) ListModels(ctx context.Context) ([]executor.ModelDescriptor, string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(e.cfg.BaseURL, "/")+"/api/tags", nil)
+	if err != nil {
+		return nil, "ollama_tags", err
+	}
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		if e.cfg.Model != "" {
+			return []executor.ModelDescriptor{{ID: e.cfg.Model, Name: e.cfg.Model, Default: true}}, "configured", err
+		}
+		return nil, "ollama_tags", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "ollama_tags", fmt.Errorf("ollama /api/tags returned HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		Models []struct {
+			Name       string `json:"name"`
+			Model      string `json:"model"`
+			ModifiedAt string `json:"modified_at"`
+			Size       int64  `json:"size"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
+		return nil, "ollama_tags", err
+	}
+
+	seen := make(map[string]struct{})
+	var out []executor.ModelDescriptor
+	if strings.TrimSpace(e.cfg.Model) != "" {
+		seen[e.cfg.Model] = struct{}{}
+		out = append(out, executor.ModelDescriptor{ID: e.cfg.Model, Name: e.cfg.Model, Default: true})
+	}
+	for _, m := range payload.Models {
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			name = strings.TrimSpace(m.Model)
+		}
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, executor.ModelDescriptor{ID: name, Name: name})
+	}
+	return out, "ollama_tags", nil
+}
+
 func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emit executor.EventHandler) (executor.ExecuteResult, error) {
 	messages, err := e.buildMessages(req)
 	if err != nil {
@@ -118,12 +175,20 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 
 	if resp.StatusCode != http.StatusOK {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		bodyText := strings.TrimSpace(string(snippet))
 		execErr := &executor.ExecError{
 			Kind:    executor.ErrExecution,
 			Code:    "ollama_error",
-			Message: fmt.Sprintf("ollama returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet))),
+			Message: fmt.Sprintf("ollama returned HTTP %d: %s", resp.StatusCode, bodyText),
 		}
-		if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusBadGateway {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			execErr.Kind = executor.ErrRateLimit
+			execErr.Code = "ollama_rate_limited"
+			if d, src := executor.ParseCooldown(bodyText, resp.Header, 0); d > 0 && src == "parsed" {
+				execErr.RetryAfterSeconds = int64(math.Ceil(d.Seconds()))
+				execErr.CooldownSource = src
+			}
+		} else if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusBadGateway {
 			execErr.Kind = executor.ErrUnavailable
 			execErr.Code = "executor_unavailable"
 		}

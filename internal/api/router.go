@@ -9,6 +9,7 @@ import (
 	"cli-ai-gateway/internal/auth"
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
+	"cli-ai-gateway/internal/pools"
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
@@ -24,20 +25,25 @@ type Dependencies struct {
 	Files     *storage.FileStore
 	Sessions  *session.Manager
 	Registry  *executor.Registry
+	Pools     *pools.Store
 	ProcMgr   *process.Manager
 }
 
 // NewRouter builds the net/http ServeMux with authentication, logging, and all public endpoints.
 func NewRouter(deps Dependencies) http.Handler {
+	if deps.Pools == nil && deps.DB != nil {
+		deps.Pools = pools.NewStore(deps.DB.SQL())
+	}
+
 	mux := http.NewServeMux()
 
 	health := NewHealthHandler(deps.DB, deps.Files, deps.Registry)
 	mux.HandleFunc("GET /health", health.Health)
 	mux.HandleFunc("GET /ready", health.Ready)
 
-	models := NewModelsHandler(deps.Registry)
+	models := NewModelsHandler(deps.Registry, deps.Pools)
 	files := NewFilesHandler(deps.Files, deps.Config.Storage.MaxFileBytes)
-	runner := NewRunner(deps.Config, deps.Registry, deps.Files, deps.Sessions, deps.ProcMgr)
+	runner := NewRunner(deps.Config, deps.Registry, deps.Pools, deps.Files, deps.Sessions, deps.ProcMgr)
 	responses := NewResponsesHandler(runner)
 	chat := NewChatHandler(runner)
 
@@ -62,6 +68,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			Files:      deps.Files,
 			Sessions:   deps.Sessions,
 			Registry:   deps.Registry,
+			Pools:      deps.Pools,
 			ProcMgr:    deps.ProcMgr,
 			Playground: runner,
 		})
