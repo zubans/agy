@@ -42,7 +42,10 @@ func (e *Executor) Check(_ context.Context) error {
 	return executor.CheckBinary(e.cfg.Executable)
 }
 
-var reAgyParenModel = regexp.MustCompile(`^([^(]+?)\s*\(([^)]+)\)\s*$`)
+var (
+	reAgyParenModel = regexp.MustCompile(`^([^(]+?)\s*\(([^)]+)\)\s*$`)
+	reAgyColumns    = regexp.MustCompile(`\s{2,}`)
+)
 
 // ListModels probes `agy models` inside the runtime environment to discover available models.
 func (e *Executor) ListModels(ctx context.Context) ([]executor.ModelDescriptor, string, error) {
@@ -165,8 +168,54 @@ func parseAgyModelsOutput(raw string) []executor.ModelDescriptor {
 		}
 		id := s
 		name := s
+		desc := ""
 		isDefault := strings.Contains(low, "(default)") || strings.Contains(low, "[default]")
-		if m := reAgyParenModel.FindStringSubmatch(s); len(m) == 3 {
+		if strings.Contains(s, "\t") {
+			rawCols := strings.Split(s, "\t")
+			cols := make([]string, 0, len(rawCols))
+			for _, c := range rawCols {
+				if t := strings.TrimSpace(c); t != "" {
+					cols = append(cols, t)
+				}
+			}
+			if len(cols) == 0 {
+				continue
+			}
+			firstLow := strings.ToLower(cols[0])
+			if len(cols) >= 2 && (firstLow == "id" || firstLow == "model" || firstLow == "model id") {
+				continue
+			}
+			id = cols[0]
+			if len(cols) >= 2 {
+				name = cols[1]
+			} else {
+				name = id
+			}
+			if len(cols) >= 3 {
+				var extra []string
+				for _, c := range cols[2:] {
+					cLow := strings.ToLower(c)
+					if cLow == "default" || cLow == "(default)" || cLow == "[default]" || cLow == "*" {
+						isDefault = true
+						continue
+					}
+					extra = append(extra, c)
+				}
+				desc = strings.Join(extra, " ")
+			}
+		} else if cols := reAgyColumns.Split(s, 2); len(cols) == 2 && !strings.Contains(strings.TrimSpace(cols[0]), " ") {
+			left := strings.TrimSpace(cols[0])
+			right := strings.TrimSpace(cols[1])
+			leftLow := strings.ToLower(left)
+			if leftLow == "id" || leftLow == "model" {
+				continue
+			}
+			id = left
+			name = right
+		} else if parts := strings.SplitN(s, " - ", 2); len(parts) == 2 && !strings.Contains(strings.TrimSpace(parts[0]), " ") {
+			id = strings.TrimSpace(parts[0])
+			name = strings.TrimSpace(parts[1])
+		} else if m := reAgyParenModel.FindStringSubmatch(s); len(m) == 3 {
 			left := strings.TrimSpace(m[1])
 			right := strings.TrimSpace(m[2])
 			// Support both "model-id (Display Name)" and "Display Name (model-id)"
@@ -177,9 +226,6 @@ func parseAgyModelsOutput(raw string) []executor.ModelDescriptor {
 				id = left
 				name = right
 			}
-		} else if parts := strings.SplitN(s, " - ", 2); len(parts) == 2 {
-			id = strings.TrimSpace(parts[0])
-			name = strings.TrimSpace(parts[1])
 		}
 		if id == "" {
 			continue
@@ -188,7 +234,7 @@ func parseAgyModelsOutput(raw string) []executor.ModelDescriptor {
 			continue
 		}
 		seen[id] = struct{}{}
-		out = append(out, executor.ModelDescriptor{ID: id, Name: name, Default: isDefault})
+		out = append(out, executor.ModelDescriptor{ID: id, Name: name, Description: desc, Default: isDefault})
 	}
 	return out
 }
@@ -365,11 +411,19 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 	}, nil
 }
 
+func normalizeModelFlag(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.IndexByte(model, '\t'); idx >= 0 {
+		model = strings.TrimSpace(model[:idx])
+	}
+	return model
+}
+
 func (e *Executor) buildArgs(req executor.ExecuteRequest) []string {
 	args := []string{"--input-format", "stream-json", "--output-format", "stream-json"}
-	modelName := req.ProviderModel
+	modelName := normalizeModelFlag(req.ProviderModel)
 	if modelName == "" {
-		modelName = e.cfg.Model
+		modelName = normalizeModelFlag(e.cfg.Model)
 	}
 	if modelName != "" {
 		args = append(args, "--model", modelName)
