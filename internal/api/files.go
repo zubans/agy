@@ -33,8 +33,12 @@ func (h *FilesHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap request body to maxFileBytes + 2 MiB for multipart headers/boundaries.
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxFileBytes+2*1024*1024)
+	// Cap request body to max(maxFileBytes, MaxAudioFileBytes) + 2 MiB for multipart headers/boundaries.
+	bodyCap := h.maxFileBytes
+	if storage.MaxAudioFileBytes > bodyCap {
+		bodyCap = storage.MaxAudioFileBytes
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, bodyCap+2*1024*1024)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		var maxErr *http.MaxBytesError
@@ -113,10 +117,15 @@ func (h *FilesHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequest(w, "missing_file", "Missing required multipart field 'file'", "file")
 		return
 	}
-	if purpose != "user_data" {
+	if !storage.IsAllowedPurpose(purpose) {
 		_ = h.files.Delete(r.Context(), principal.OwnerID, uploaded.ID)
-		writeInvalidRequest(w, "invalid_purpose", "Field 'purpose' is required and must be 'user_data'", "purpose")
+		writeInvalidRequest(w, "invalid_purpose", "Field 'purpose' is required and must be 'user_data', 'vision', or 'audio'", "purpose")
 		return
+	}
+	if purpose != uploaded.Purpose {
+		if err := h.files.UpdatePurpose(r.Context(), principal.OwnerID, uploaded.ID, purpose); err == nil {
+			uploaded.Purpose = purpose
+		}
 	}
 
 	if audit := AuditFromContext(r.Context()); audit != nil {

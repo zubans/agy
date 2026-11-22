@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,19 +11,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"cli-ai-gateway/internal/auth"
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
+	"cli-ai-gateway/internal/mcpserver"
 	"cli-ai-gateway/internal/pools"
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
+	"cli-ai-gateway/internal/tools"
 )
 
 // Runner coordinates validation, priority target selection, cooldown failover, locking,
-// file staging, concurrency control, and execution across /v1/responses and /v1/chat/completions.
+// file staging, concurrency control, server/client tools, and execution across /v1/responses and /v1/chat/completions.
 type Runner struct {
 	cfg      *config.Config
 	registry *executor.Registry
@@ -29,6 +34,8 @@ type Runner struct {
 	files    *storage.FileStore
 	sessions *session.Manager
 	procMgr  *process.Manager
+	tools    *tools.Registry
+	mcp      *mcpserver.Server
 }
 
 func NewRunner(cfg *config.Config, registry *executor.Registry, poolStore *pools.Store, files *storage.FileStore, sessions *session.Manager, procMgr *process.Manager) *Runner {
@@ -42,6 +49,35 @@ func NewRunner(cfg *config.Config, registry *executor.Registry, poolStore *pools
 	}
 }
 
+// SetTools attaches the server-side tool registry and per-run MCP server to the Runner.
+func (rn *Runner) SetTools(toolReg *tools.Registry, mcpSrv *mcpserver.Server) {
+	rn.tools = toolReg
+	rn.mcp = mcpSrv
+}
+
+// StageInlineMedia saves an inline base64-decoded media payload (from image_url or input_audio)
+// into FileStore for the duration of the request.
+func (rn *Runner) StageInlineMedia(ctx context.Context, ownerID, filename, purpose string, data []byte) (storage.FileRecord, error) {
+	return rn.files.Save(ctx, ownerID, filename, purpose, bytes.NewReader(data))
+}
+
+func (rn *Runner) mcpBaseURL() string {
+	if u := strings.TrimRight(strings.TrimSpace(os.Getenv("GATEWAY_MCP_BASE_URL")), "/"); u != "" {
+		return u
+	}
+	listen := strings.TrimSpace(rn.cfg.Server.Listen)
+	if strings.HasPrefix(listen, ":") {
+		return "http://127.0.0.1" + listen
+	}
+	if strings.HasPrefix(listen, "0.0.0.0:") {
+		return "http://127.0.0.1:" + strings.TrimPrefix(listen, "0.0.0.0:")
+	}
+	if listen == "" {
+		return "http://127.0.0.1:7070"
+	}
+	return "http://" + listen
+}
+
 type PipelineInput struct {
 	Principal          auth.Principal
 	ModelID            string
@@ -53,6 +89,9 @@ type PipelineInput struct {
 	// PromptNote carries short inline text when prompt.md is already supplied via input_file.
 	PromptNote    string
 	HistoryEntry  string
+	Tools         []executor.ToolDefinition
+	ToolChoice    any
+	ServerTools   []string
 	Stream        bool
 	OnStreamReady func(run session.RunRecord, prevRespID *string) error
 	OnDelta       func(delta string) error
@@ -389,6 +428,8 @@ func (rn *Runner) executeAttempt(
 		Files:         stagedFiles,
 		Instructions:  in.Instructions,
 		Prompt:        in.PromptNote,
+		Tools:         in.Tools,
+		ToolChoice:    in.ToolChoice,
 		Session:       sessCtx,
 		Settings: executor.ExecutionSettings{
 			Timeout:        timeout,
@@ -398,7 +439,43 @@ func (rn *Runner) executeAttempt(
 		},
 	}
 
-	res, execErr := cand.Info.Executor.Execute(execCtx, execReq, func(ev executor.Event) error {
+	// Resolve server-side tools bound to this model (or explicitly requested).
+	serverToolNames := in.ServerTools
+	if len(serverToolNames) == 0 && rn.tools != nil && rn.tools.Store() != nil {
+		if bound, bErr := rn.tools.Store().GetModelTools(ctx, in.ModelID); bErr == nil && len(bound) > 0 {
+			serverToolNames = bound
+		}
+	}
+
+	var (
+		genMu          sync.Mutex
+		generatedFiles []executor.GeneratedFileRef
+	)
+	runToolCtx := tools.RunContext{
+		RunID:         run.ID,
+		OwnerID:       in.Principal.OwnerID,
+		WorkDir:       run.Dir,
+		AttachedFiles: fileRecords,
+		OnFileGenerated: func(ref executor.GeneratedFileRef) {
+			genMu.Lock()
+			generatedFiles = append(generatedFiles, ref)
+			genMu.Unlock()
+		},
+	}
+
+	var mcpSess *mcpserver.Session
+	if cand.Info.Config.Provider != "ollama" && rn.mcp != nil && (len(serverToolNames) > 0 || len(in.Tools) > 0) {
+		mcpSess = rn.mcp.RegisterSession(run.ID, runToolCtx, serverToolNames, in.Tools, func(_ executor.ToolCall) {
+			cancel()
+		})
+		defer rn.mcp.UnregisterSession(run.ID)
+		execReq.MCP = &executor.MCPConfig{
+			URL:   rn.mcpBaseURL() + "/internal/mcp/" + run.ID,
+			Token: mcpSess.Token,
+		}
+	}
+
+	emitHandler := func(ev executor.Event) error {
 		rn.sessions.AppendEvent(run, ev)
 		if ev.Type == executor.EventTextDelta && ev.Text != "" && in.OnDelta != nil {
 			if in.Stream && !streamCommitted {
@@ -417,7 +494,34 @@ func (rn *Runner) executeAttempt(
 			return in.OnDelta(ev.Text)
 		}
 		return nil
-	})
+	}
+
+	var res executor.ExecuteResult
+	if cand.Info.Config.Provider == "ollama" && rn.tools != nil && len(serverToolNames) > 0 {
+		res, execErr = rn.executeOllamaToolLoop(execCtx, cand, execReq, serverToolNames, runToolCtx, emitHandler)
+	} else {
+		res, execErr = cand.Info.Executor.Execute(execCtx, execReq, emitHandler)
+	}
+
+	if mcpSess != nil {
+		if captured := mcpSess.CapturedClientCalls(); len(captured) > 0 {
+			res.ToolCalls = captured
+			res.FinishReason = "tool_calls"
+			res.Status = "completed"
+			res.Error = nil
+			execErr = nil
+		}
+		for _, gf := range mcpSess.GeneratedFiles() {
+			genMu.Lock()
+			generatedFiles = append(generatedFiles, gf)
+			genMu.Unlock()
+		}
+	}
+	genMu.Lock()
+	if len(generatedFiles) > 0 {
+		res.GeneratedFiles = append(res.GeneratedFiles, generatedFiles...)
+	}
+	genMu.Unlock()
 	duration := time.Since(start)
 
 	var errType string
@@ -531,6 +635,8 @@ func (rn *Runner) stageWorkspace(run session.RunRecord, files []storage.FileReco
 			Path:         destPath,
 			RelativePath: "./input/" + name,
 			Size:         fr.Bytes,
+			MediaKind:    fr.MediaKind,
+			ContentType:  fr.ContentType,
 		})
 	}
 
@@ -561,4 +667,186 @@ func (rn *Runner) stageWorkspace(run session.RunRecord, files []storage.FileReco
 		summary = "Files: " + strings.Join(names, ", ")
 	}
 	return staged, totalBytes, summary, nil
+}
+
+// executeOllamaToolLoop runs a server-side agentic loop for Ollama when server tools are bound to the model.
+// Client-defined tools are returned immediately to the caller as finish_reason="tool_calls".
+func (rn *Runner) executeOllamaToolLoop(
+	ctx context.Context,
+	cand pools.ResolvedTarget,
+	baseReq executor.ExecuteRequest,
+	serverToolNames []string,
+	runCtx tools.RunContext,
+	emit executor.EventHandler,
+) (executor.ExecuteResult, error) {
+	serverDefs := rn.tools.Definitions(serverToolNames)
+	serverSet := make(map[string]bool, len(serverDefs))
+	for _, d := range serverDefs {
+		serverSet[d.Name] = true
+	}
+
+	combinedTools := make([]executor.ToolDefinition, 0, len(serverDefs)+len(baseReq.Tools))
+	combinedTools = append(combinedTools, serverDefs...)
+	combinedTools = append(combinedTools, baseReq.Tools...)
+
+	req := baseReq
+	req.Tools = combinedTools
+
+	const maxSteps = 8
+	var totalUsage executor.Usage
+	for step := 0; step < maxSteps; step++ {
+		res, err := cand.Info.Executor.Execute(ctx, req, emit)
+		totalUsage.InputTokens += res.Usage.InputTokens
+		totalUsage.OutputTokens += res.Usage.OutputTokens
+		totalUsage.TotalTokens += res.Usage.TotalTokens
+		if res.Usage.Available {
+			totalUsage.Available = true
+		}
+		if err != nil {
+			res.Usage = totalUsage
+			return res, err
+		}
+		if len(res.ToolCalls) == 0 {
+			res.Usage = totalUsage
+			return res, nil
+		}
+
+		// If any call targets a client-defined tool, return them directly to the HTTP caller.
+		var clientCalls []executor.ToolCall
+		var serverCalls []executor.ToolCall
+		for _, tc := range res.ToolCalls {
+			if serverSet[tc.Name] {
+				serverCalls = append(serverCalls, tc)
+			} else {
+				clientCalls = append(clientCalls, tc)
+			}
+		}
+		if len(clientCalls) > 0 {
+			res.ToolCalls = clientCalls
+			res.FinishReason = "tool_calls"
+			res.Usage = totalUsage
+			return res, nil
+		}
+
+		// Execute server tools locally and append results to the prompt for the next turn.
+		var sb strings.Builder
+		if req.Prompt != "" {
+			sb.WriteString(req.Prompt)
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("<tool_results>\n")
+		for _, tc := range serverCalls {
+			out, tErr := rn.tools.Execute(ctx, runCtx, tc.Name, json.RawMessage(tc.Arguments))
+			text := out.Text
+			if text == "" && tErr != nil {
+				text = "Error: " + tErr.Error()
+			}
+			sb.WriteString(fmt.Sprintf("<tool_result name=%q call_id=%q>\n%s\n</tool_result>\n", tc.Name, tc.ID, text))
+		}
+		sb.WriteString("</tool_results>\nContinue and produce the final answer for the user.")
+		req.Prompt = sb.String()
+	}
+
+	return executor.ExecuteResult{
+		Answer: "Maximum server tool execution steps reached.",
+		Status: "completed",
+		Usage:  totalUsage,
+	}, nil
+}
+
+// InvokePoolByCapability lets server tools (image_analyze, image_ocr, audio_transcribe)
+// delegate a sub-task to the first available model supporting the requested capability ("image_in" or "audio_in").
+func (rn *Runner) InvokePoolByCapability(ctx context.Context, ownerID, capability, prompt string, fileIDs []string) (string, error) {
+	// Find a published model or direct executor that supports the requested capability.
+	var targetModel string
+	if rn.pools != nil && rn.tools != nil && rn.tools.Store() != nil {
+		if pms, err := rn.pools.ListPublishedModels(ctx, true); err == nil {
+			for _, pm := range pms {
+				if !pm.Enabled {
+					continue
+				}
+				caps, _ := rn.tools.Store().GetModelCapabilities(ctx, pm.ID)
+				if (capability == "image_in" && caps.ImageIn) || (capability == "audio_in" && caps.AudioIn) {
+					targetModel = pm.ID
+					break
+				}
+			}
+		}
+	}
+	if targetModel == "" {
+		for _, info := range rn.registry.ListProviders() {
+			if (capability == "image_in" && info.Capabilities.ImageIn) || (capability == "audio_in" && info.Capabilities.AudioIn) {
+				if info.Executor.Check(ctx) == nil {
+					targetModel = info.Config.ID
+					break
+				}
+			}
+		}
+	}
+	if targetModel == "" {
+		return "", fmt.Errorf("no enabled model with capability %q available", capability)
+	}
+
+	info, ok := rn.registry.Get(targetModel)
+	if !ok {
+		// Resolve via pool if it's a published model.
+		if rn.pools == nil {
+			return "", fmt.Errorf("model %q unavailable", targetModel)
+		}
+		sel, err := rn.pools.ResolveCandidates(ctx, rn.registry, targetModel)
+		if err != nil || len(sel.Candidates) == 0 {
+			return "", fmt.Errorf("no available provider for %q", targetModel)
+		}
+		info = sel.Candidates[0].Info
+	}
+
+	fileRecs, err := rn.files.AcquireForRun(ctx, ownerID, fileIDs)
+	if err != nil {
+		return "", err
+	}
+	defer rn.files.ReleaseForRun(context.Background(), fileIDs)
+
+	tmpDir, err := os.MkdirTemp("", "agy-delegate-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmpDir)
+	inputDir := filepath.Join(tmpDir, "input")
+	if err := os.MkdirAll(inputDir, 0o700); err != nil {
+		return "", err
+	}
+
+	staged := make([]executor.ExecuteFile, 0, len(fileRecs))
+	for _, fr := range fileRecs {
+		dest := filepath.Join(inputDir, fr.Filename)
+		if err := rn.files.CopyToWorkspace(fr, dest); err != nil {
+			return "", err
+		}
+		staged = append(staged, executor.ExecuteFile{
+			ID:           fr.ID,
+			Name:         fr.Filename,
+			Path:         dest,
+			RelativePath: "./input/" + fr.Filename,
+			Size:         fr.Bytes,
+			MediaKind:    fr.MediaKind,
+			ContentType:  fr.ContentType,
+		})
+	}
+
+	res, err := info.Executor.Execute(ctx, executor.ExecuteRequest{
+		RunID:         "delegate_" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		Model:         targetModel,
+		ProviderModel: info.Config.Model,
+		WorkDir:       tmpDir,
+		Files:         staged,
+		Prompt:        prompt,
+		Settings: executor.ExecutionSettings{
+			Timeout:        2 * time.Minute,
+			MaxOutputBytes: rn.cfg.Limits.MaxOutputBytes,
+		},
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	return res.Answer, nil
 }

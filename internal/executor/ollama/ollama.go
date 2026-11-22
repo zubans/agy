@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,7 +48,9 @@ func (e *Executor) Capabilities() executor.Capabilities {
 		SessionResume:    false,
 		ModelSelection:   true,
 		FileInput:        true,
-		SupportedFormats: []string{"markdown", "text"},
+		ImageIn:          true,
+		Tools:            true,
+		SupportedFormats: []string{"markdown", "text", "image"},
 		TokenUsage:       true,
 	}
 }
@@ -142,11 +147,30 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 		modelName = e.cfg.Model
 	}
 
-	bodyBytes, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":    modelName,
 		"messages": messages,
 		"stream":   true,
-	})
+	}
+	if len(req.Tools) > 0 {
+		ollamaTools := make([]map[string]any, 0, len(req.Tools))
+		for _, t := range req.Tools {
+			params := t.Parameters
+			if params == nil {
+				params = map[string]any{"type": "object", "properties": map[string]any{}}
+			}
+			ollamaTools = append(ollamaTools, map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        t.Name,
+					"description": t.Description,
+					"parameters":  params,
+				},
+			})
+		}
+		payload["tools"] = ollamaTools
+	}
+	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return executor.ExecuteResult{Status: "failed", ExitCode: -1}, err
 	}
@@ -205,8 +229,9 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 	}
 
 	var (
-		answer strings.Builder
-		usage  executor.Usage
+		answer    strings.Builder
+		usage     executor.Usage
+		toolCalls []executor.ToolCall
 	)
 
 	br := bufio.NewReaderSize(resp.Body, 64*1024)
@@ -259,6 +284,28 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 							}
 						}
 					}
+					if len(chunk.Message.ToolCalls) > 0 {
+						for _, tc := range chunk.Message.ToolCalls {
+							if strings.TrimSpace(tc.Function.Name) == "" {
+								continue
+							}
+							argsBytes, _ := json.Marshal(tc.Function.Arguments)
+							if len(argsBytes) == 0 || string(argsBytes) == "null" {
+								argsBytes = []byte("{}")
+							}
+							id := strings.TrimSpace(tc.ID)
+							if id == "" {
+								var rb [8]byte
+								_, _ = rand.Read(rb[:])
+								id = "call_" + hex.EncodeToString(rb[:])
+							}
+							toolCalls = append(toolCalls, executor.ToolCall{
+								ID:        id,
+								Name:      tc.Function.Name,
+								Arguments: string(argsBytes),
+							})
+						}
+					}
 					if chunk.Done {
 						usage = executor.Usage{
 							InputTokens:  chunk.PromptEvalCount,
@@ -291,23 +338,30 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 		}
 	}
 
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
 	return executor.ExecuteResult{
-		Answer: answer.String(),
-		Status: "completed",
-		Usage:  usage,
+		Answer:       answer.String(),
+		Status:       "completed",
+		FinishReason: finishReason,
+		ToolCalls:    toolCalls,
+		Usage:        usage,
 	}, nil
 }
 
-func (e *Executor) buildMessages(req executor.ExecuteRequest) ([]map[string]string, error) {
-	var msgs []map[string]string
+func (e *Executor) buildMessages(req executor.ExecuteRequest) ([]map[string]any, error) {
+	var msgs []map[string]any
 	if req.Instructions != "" {
-		msgs = append(msgs, map[string]string{
+		msgs = append(msgs, map[string]any{
 			"role":    "system",
 			"content": req.Instructions,
 		})
 	}
 
 	var userContent strings.Builder
+	var imagesB64 []string
 	if req.Session.HistoryFile != "" {
 		data, err := executor.ReadWorkDirFile(req.WorkDir, req.Session.HistoryFile)
 		if err != nil {
@@ -326,19 +380,31 @@ func (e *Executor) buildMessages(req executor.ExecuteRequest) ([]map[string]stri
 		if err != nil {
 			return nil, fmt.Errorf("read file %s: %w", f.Name, err)
 		}
-		userContent.WriteString(fmt.Sprintf("<input_file name=%q>\n", f.Name))
-		userContent.Write(data)
-		userContent.WriteString("\n</input_file>\n\n")
+		switch f.MediaKind {
+		case "image":
+			imagesB64 = append(imagesB64, base64.StdEncoding.EncodeToString(data))
+			userContent.WriteString(fmt.Sprintf("<attached_image file_id=%q name=%q content_type=%q/>\n\n", f.ID, f.Name, f.ContentType))
+		case "audio":
+			userContent.WriteString(fmt.Sprintf("<attached_audio file_id=%q name=%q content_type=%q bytes=%d/>\n\n", f.ID, f.Name, f.ContentType, f.Size))
+		default:
+			userContent.WriteString(fmt.Sprintf("<input_file file_id=%q name=%q>\n", f.ID, f.Name))
+			userContent.Write(data)
+			userContent.WriteString("\n</input_file>\n\n")
+		}
 	}
 
 	if req.Prompt != "" {
 		userContent.WriteString(req.Prompt)
 	}
 
-	msgs = append(msgs, map[string]string{
+	userMsg := map[string]any{
 		"role":    "user",
 		"content": strings.TrimSpace(userContent.String()),
-	})
+	}
+	if len(imagesB64) > 0 {
+		userMsg["images"] = imagesB64
+	}
+	msgs = append(msgs, userMsg)
 	return msgs, nil
 }
 
@@ -367,10 +433,19 @@ func classifyOllamaErr(err error) *executor.ExecError {
 	}
 }
 
+type ollamaToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Function struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	} `json:"function"`
+}
+
 type ollamaChatChunk struct {
 	Message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role      string           `json:"role"`
+		Content   string           `json:"content"`
+		ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
 	Done            bool   `json:"done"`
 	Error           string `json:"error"`

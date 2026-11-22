@@ -9,6 +9,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +20,16 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+)
+
+const (
+	MediaKindText     = "text"
+	MediaKindImage    = "image"
+	MediaKindAudio    = "audio"
+	MediaKindDocument = "document"
+
+	MaxImageFileBytes = 20 * 1024 * 1024
+	MaxAudioFileBytes = 100 * 1024 * 1024
 )
 
 var (
@@ -28,20 +42,24 @@ var (
 	ErrFileInUse       = errors.New("file is currently in use by an active task")
 )
 
-// FileRecord mirrors OpenAI File metadata plus ownership & quota state.
+// FileRecord mirrors OpenAI File metadata plus ownership, media, & quota state.
 type FileRecord struct {
-	ID          string `json:"id"`
-	Object      string `json:"object"`
-	Bytes       int64  `json:"bytes"`
-	CreatedAt   int64  `json:"created_at"`
-	Filename    string `json:"filename"`
-	Purpose     string `json:"purpose"`
-	OwnerID     string `json:"-"`
-	ContentType string `json:"-"`
-	SHA256      string `json:"-"`
-	StorageName string `json:"-"`
-	ExpiresAt   int64  `json:"-"`
-	ActiveRefs  int    `json:"-"`
+	ID          string  `json:"id"`
+	Object      string  `json:"object"`
+	Bytes       int64   `json:"bytes"`
+	CreatedAt   int64   `json:"created_at"`
+	Filename    string  `json:"filename"`
+	Purpose     string  `json:"purpose"`
+	MediaKind   string  `json:"media_kind,omitempty"`
+	Width       int     `json:"width,omitempty"`
+	Height      int     `json:"height,omitempty"`
+	DurationSec float64 `json:"duration_sec,omitempty"`
+	OwnerID     string  `json:"-"`
+	ContentType string  `json:"-"`
+	SHA256      string  `json:"-"`
+	StorageName string  `json:"-"`
+	ExpiresAt   int64   `json:"-"`
+	ActiveRefs  int     `json:"-"`
 }
 
 // FileStore manages safe, owner-isolated local file storage and SQLite metadata (Section 6.2-6.5, 11.2).
@@ -100,11 +118,21 @@ func (s *FileStore) CheckWritable() error {
 	return nil
 }
 
-// Save streams an uploaded file safely into a temporary file, validates size, quota, and type,
-// and commits metadata to SQLite.
+// IsAllowedPurpose returns true if purpose is accepted by POST /v1/files.
+func IsAllowedPurpose(purpose string) bool {
+	switch purpose {
+	case "user_data", "vision", "audio":
+		return true
+	default:
+		return false
+	}
+}
+
+// Save streams an uploaded file safely into a temporary file, validates size, quota, and type
+// (UTF-8 text, images, or audio detected by content magic bytes), and commits metadata to SQLite.
 func (s *FileStore) Save(ctx context.Context, ownerID, rawFilename, purpose string, r io.Reader) (FileRecord, error) {
-	if purpose != "user_data" {
-		return FileRecord{}, fmt.Errorf("%w: purpose must be user_data", ErrInvalidFileType)
+	if !IsAllowedPurpose(purpose) && purpose != "generated" {
+		return FileRecord{}, fmt.Errorf("%w: purpose must be user_data, vision, or audio", ErrInvalidFileType)
 	}
 
 	safeName, err := SanitizeFilename(rawFilename)
@@ -134,24 +162,30 @@ func (s *FileStore) Save(ctx context.Context, ownerID, rawFilename, purpose stri
 		}
 	}()
 
+	hardLimit := s.maxFileBytes
+	if purpose == "audio" && MaxAudioFileBytes > hardLimit {
+		hardLimit = MaxAudioFileBytes
+	}
+
 	hasher := sha256.New()
 	sniffBuf := make([]byte, 0, 8192)
 	buf := make([]byte, 32*1024)
 	var total int64
+	hasNul := false
 
 	for {
 		n, readErr := r.Read(buf)
 		if n > 0 {
 			total += int64(n)
-			if total > s.maxFileBytes {
+			if total > hardLimit {
 				return FileRecord{}, ErrFileTooLarge
 			}
 			if usedBytes+total > s.quotaBytes {
 				return FileRecord{}, ErrStorageQuota
 			}
 			chunk := buf[:n]
-			if bytes.IndexByte(chunk, 0) >= 0 {
-				return FileRecord{}, fmt.Errorf("%w: binary null bytes are not permitted", ErrInvalidFileType)
+			if !hasNul && bytes.IndexByte(chunk, 0) >= 0 {
+				hasNul = true
 			}
 			if len(sniffBuf) < 8192 {
 				need := 8192 - len(sniffBuf)
@@ -177,14 +211,38 @@ func (s *FileStore) Save(ctx context.Context, ownerID, rawFilename, purpose stri
 		return FileRecord{}, fmt.Errorf("%w: file must not be empty", ErrInvalidFileType)
 	}
 
-	contentType := detectAllowedTextType(safeName, sniffBuf)
-	if contentType == "" {
-		return FileRecord{}, fmt.Errorf("%w: only UTF-8 text and markdown files are allowed", ErrInvalidFileType)
-	}
+	mediaKind, contentType := detectAllowedMediaType(safeName, sniffBuf)
+	var width, height int
 
-	// Validate full UTF-8 integrity for non-trivial files up to maxFileBytes.
-	if err := validateFileUTF8(tmpFile); err != nil {
-		return FileRecord{}, fmt.Errorf("%w: %v", ErrInvalidFileType, err)
+	if mediaKind == MediaKindImage {
+		if total > MaxImageFileBytes {
+			return FileRecord{}, ErrFileTooLarge
+		}
+		if _, err := tmpFile.Seek(0, io.SeekStart); err == nil {
+			if cfg, _, decErr := image.DecodeConfig(tmpFile); decErr == nil {
+				width, height = cfg.Width, cfg.Height
+			}
+		}
+	} else if mediaKind == MediaKindAudio {
+		if total > MaxAudioFileBytes {
+			return FileRecord{}, ErrFileTooLarge
+		}
+	} else {
+		// Fall back to strict UTF-8 text validation (rejects NUL bytes & dangerous extensions).
+		if total > s.maxFileBytes {
+			return FileRecord{}, ErrFileTooLarge
+		}
+		if hasNul {
+			return FileRecord{}, fmt.Errorf("%w: binary null bytes are not permitted", ErrInvalidFileType)
+		}
+		contentType = detectAllowedTextType(safeName, sniffBuf)
+		if contentType == "" {
+			return FileRecord{}, fmt.Errorf("%w: only UTF-8 text, images (png/jpeg/webp/gif), and audio (mp3/wav/ogg/m4a/flac/webm) are allowed", ErrInvalidFileType)
+		}
+		if err := validateFileUTF8(tmpFile); err != nil {
+			return FileRecord{}, fmt.Errorf("%w: %v", ErrInvalidFileType, err)
+		}
+		mediaKind = MediaKindText
 	}
 
 	if err := tmpFile.Chmod(0o600); err != nil {
@@ -212,6 +270,9 @@ func (s *FileStore) Save(ctx context.Context, ownerID, rawFilename, purpose stri
 		CreatedAt:   now,
 		Filename:    safeName,
 		Purpose:     purpose,
+		MediaKind:   mediaKind,
+		Width:       width,
+		Height:      height,
 		OwnerID:     ownerID,
 		ContentType: contentType,
 		SHA256:      sumHex,
@@ -220,14 +281,57 @@ func (s *FileStore) Save(ctx context.Context, ownerID, rawFilename, purpose stri
 	}
 
 	if _, err := s.db.SQL().ExecContext(ctx, `
-		INSERT INTO files (id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, rec.ID, rec.OwnerID, rec.Filename, rec.Purpose, rec.Bytes, rec.ContentType, rec.SHA256, rec.StorageName, rec.CreatedAt, rec.ExpiresAt); err != nil {
+		INSERT INTO files (id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at, media_kind, width, height, duration_sec)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, rec.ID, rec.OwnerID, rec.Filename, rec.Purpose, rec.Bytes, rec.ContentType, rec.SHA256, rec.StorageName, rec.CreatedAt, rec.ExpiresAt, rec.MediaKind, rec.Width, rec.Height, rec.DurationSec); err != nil {
 		_ = os.Remove(destPath)
 		return FileRecord{}, fmt.Errorf("insert file metadata: %w", err)
 	}
 
 	return rec, nil
+}
+
+// SaveGenerated persists an artifact created by a server tool (generated image, audio, SVG/HTML, etc.).
+func (s *FileStore) SaveGenerated(ctx context.Context, ownerID, filename string, data []byte) (FileRecord, error) {
+	return s.Save(ctx, ownerID, filename, "generated", bytes.NewReader(data))
+}
+
+// ReadBytes reads a file's contents up to maxBytes, enforcing owner isolation.
+func (s *FileStore) ReadBytes(ctx context.Context, ownerID, fileID string, maxBytes int64) (FileRecord, []byte, error) {
+	rec, f, err := s.OpenContent(ctx, ownerID, fileID)
+	if err != nil {
+		return FileRecord{}, nil, err
+	}
+	defer f.Close()
+	if maxBytes > 0 && rec.Bytes > maxBytes {
+		return rec, nil, ErrFileTooLarge
+	}
+	var r io.Reader = f
+	if maxBytes > 0 {
+		r = io.LimitReader(f, maxBytes+1)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return rec, nil, err
+	}
+	if maxBytes > 0 && int64(len(b)) > maxBytes {
+		return rec, nil, ErrFileTooLarge
+	}
+	return rec, b, nil
+}
+
+// PathForRecord returns the verified on-disk path for a FileRecord (for trusted internal tools like ffmpeg).
+func (s *FileStore) PathForRecord(rec FileRecord) (string, error) {
+	return s.safeStoragePath(rec.StorageName)
+}
+
+// UpdatePurpose updates the purpose column for an owned file record.
+func (s *FileStore) UpdatePurpose(ctx context.Context, ownerID, fileID, purpose string) error {
+	if !IsAllowedPurpose(purpose) {
+		return fmt.Errorf("%w: invalid purpose", ErrInvalidFileType)
+	}
+	_, err := s.db.SQL().ExecContext(ctx, `UPDATE files SET purpose = ? WHERE id = ? AND owner_id = ? AND deleted = 0`, purpose, fileID, ownerID)
+	return err
 }
 
 // Get checks existence and ownership of a file_id.
@@ -237,12 +341,13 @@ func (s *FileStore) Get(ctx context.Context, ownerID, fileID string) (FileRecord
 	}
 	var rec FileRecord
 	err := s.db.SQL().QueryRowContext(ctx, `
-		SELECT id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at, active_refs
+		SELECT id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at, active_refs, media_kind, width, height, duration_sec
 		FROM files
 		WHERE id = ? AND deleted = 0
 	`, fileID).Scan(
 		&rec.ID, &rec.OwnerID, &rec.Filename, &rec.Purpose, &rec.Bytes,
 		&rec.ContentType, &rec.SHA256, &rec.StorageName, &rec.CreatedAt, &rec.ExpiresAt, &rec.ActiveRefs,
+		&rec.MediaKind, &rec.Width, &rec.Height, &rec.DurationSec,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return FileRecord{}, ErrFileNotFound
@@ -331,11 +436,12 @@ func (s *FileStore) AcquireForRun(ctx context.Context, ownerID string, fileIDs [
 		}
 		var rec FileRecord
 		err := tx.QueryRowContext(ctx, `
-			SELECT id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at, active_refs
+			SELECT id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at, active_refs, media_kind, width, height, duration_sec
 			FROM files WHERE id = ? AND deleted = 0
 		`, fid).Scan(
 			&rec.ID, &rec.OwnerID, &rec.Filename, &rec.Purpose, &rec.Bytes,
 			&rec.ContentType, &rec.SHA256, &rec.StorageName, &rec.CreatedAt, &rec.ExpiresAt, &rec.ActiveRefs,
+			&rec.MediaKind, &rec.Width, &rec.Height, &rec.DurationSec,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrFileNotFound
@@ -401,7 +507,7 @@ func (s *FileStore) ListAll(ctx context.Context, limit int) ([]FileRecord, error
 		limit = 200
 	}
 	rows, err := s.db.SQL().QueryContext(ctx, `
-		SELECT id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at, active_refs
+		SELECT id, owner_id, filename, purpose, bytes, content_type, sha256, storage_name, created_at, expires_at, active_refs, media_kind, width, height, duration_sec
 		FROM files
 		WHERE deleted = 0
 		ORDER BY created_at DESC
@@ -418,6 +524,7 @@ func (s *FileStore) ListAll(ctx context.Context, limit int) ([]FileRecord, error
 		if err := rows.Scan(
 			&rec.ID, &rec.OwnerID, &rec.Filename, &rec.Purpose, &rec.Bytes,
 			&rec.ContentType, &rec.SHA256, &rec.StorageName, &rec.CreatedAt, &rec.ExpiresAt, &rec.ActiveRefs,
+			&rec.MediaKind, &rec.Width, &rec.Height, &rec.DurationSec,
 		); err != nil {
 			return nil, err
 		}
@@ -586,6 +693,53 @@ func SanitizeFilename(raw string) (string, error) {
 		return "", ErrInvalidFilename
 	}
 	return trimmed, nil
+}
+
+func detectAllowedMediaType(filename string, sample []byte) (mediaKind, contentType string) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".exe", ".dll", ".so", ".dylib", ".bin", ".elf", ".shx", ".zip", ".tar", ".gz":
+		return "", ""
+	}
+	if len(sample) >= 8 && bytes.Equal(sample[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		return MediaKindImage, "image/png"
+	}
+	if len(sample) >= 3 && sample[0] == 0xFF && sample[1] == 0xD8 && sample[2] == 0xFF {
+		return MediaKindImage, "image/jpeg"
+	}
+	if len(sample) >= 6 && (bytes.Equal(sample[:6], []byte("GIF87a")) || bytes.Equal(sample[:6], []byte("GIF89a"))) {
+		return MediaKindImage, "image/gif"
+	}
+	if len(sample) >= 12 && bytes.Equal(sample[:4], []byte("RIFF")) && bytes.Equal(sample[8:12], []byte("WEBP")) {
+		return MediaKindImage, "image/webp"
+	}
+	if ext == ".svg" && bytes.Contains(bytes.ToLower(sample), []byte("<svg")) {
+		return MediaKindImage, "image/svg+xml"
+	}
+
+	// Audio magic signatures
+	if len(sample) >= 12 && bytes.Equal(sample[:4], []byte("RIFF")) && bytes.Equal(sample[8:12], []byte("WAVE")) {
+		return MediaKindAudio, "audio/wav"
+	}
+	if len(sample) >= 4 && bytes.Equal(sample[:4], []byte("OggS")) {
+		return MediaKindAudio, "audio/ogg"
+	}
+	if len(sample) >= 4 && bytes.Equal(sample[:4], []byte("fLaC")) {
+		return MediaKindAudio, "audio/flac"
+	}
+	if len(sample) >= 3 && bytes.Equal(sample[:3], []byte("ID3")) {
+		return MediaKindAudio, "audio/mpeg"
+	}
+	if len(sample) >= 2 && sample[0] == 0xFF && (sample[1]&0xE0) == 0xE0 && (ext == ".mp3" || ext == ".mpeg" || ext == "") {
+		return MediaKindAudio, "audio/mpeg"
+	}
+	if len(sample) >= 12 && bytes.Equal(sample[4:8], []byte("ftyp")) {
+		return MediaKindAudio, "audio/mp4"
+	}
+	if len(sample) >= 4 && bytes.Equal(sample[:4], []byte{0x1A, 0x45, 0xDF, 0xA3}) {
+		return MediaKindAudio, "audio/webm"
+	}
+	return "", ""
 }
 
 func detectAllowedTextType(filename string, sample []byte) string {

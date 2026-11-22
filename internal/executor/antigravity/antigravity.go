@@ -33,7 +33,11 @@ func (e *Executor) Capabilities() executor.Capabilities {
 		SessionResume:    true,
 		ModelSelection:   true,
 		FileInput:        true,
-		SupportedFormats: []string{"markdown", "text"},
+		ImageIn:          true,
+		AudioIn:          true,
+		Tools:            true,
+		MCP:              true,
+		SupportedFormats: []string{"markdown", "text", "image", "audio"},
 		TokenUsage:       true,
 	}
 }
@@ -268,6 +272,20 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 		return executor.ExecuteResult{Status: "failed", ExitCode: -1, Error: execErr}, execErr
 	}
 
+	extraEnv := make(map[string]string, len(e.cfg.Env)+3)
+	for k, v := range e.cfg.Env {
+		extraEnv[k] = v
+	}
+	if req.MCP != nil && strings.TrimSpace(req.MCP.URL) != "" {
+		mcpPath, mcpErr := executor.WriteMCPConfigFile(req.WorkDir, req.MCP)
+		if mcpErr != nil {
+			return executor.ExecuteResult{Status: "failed", ExitCode: -1}, mcpErr
+		}
+		extraEnv["AGY_MCP_CONFIG"] = mcpPath
+		extraEnv["AGY_MCP_URL"] = req.MCP.URL
+		extraEnv["AGY_MCP_TOKEN"] = req.MCP.Token
+	}
+
 	instruction := executor.BuildFileInstruction(req)
 	if req.Instructions != "" {
 		instruction = "<system>\n" + req.Instructions + "\n</system>\n\n" + instruction
@@ -297,7 +315,7 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 		Args:           args,
 		WorkDir:        req.WorkDir,
 		HomeDir:        e.cfg.HomeDir,
-		ExtraEnv:       e.cfg.Env,
+		ExtraEnv:       extraEnv,
 		Stdin:          stdinPayload,
 		MaxOutputBytes: req.Settings.MaxOutputBytes,
 		OnLine: func(line []byte) error {

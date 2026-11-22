@@ -47,6 +47,8 @@ type FileMeta struct {
 	Name         string `json:"name"`
 	RelativePath string `json:"relative_path"`
 	Size         int64  `json:"size"`
+	MediaKind    string `json:"media_kind,omitempty"`
+	ContentType  string `json:"content_type,omitempty"`
 	FieldName    string `json:"field_name"`
 }
 
@@ -60,17 +62,20 @@ type SessionPayload struct {
 
 // ExecuteMeta is the JSON metadata part ("meta") of POST /worker/execute.
 type ExecuteMeta struct {
-	RunID          string         `json:"run_id"`
-	Model          string         `json:"model"`
-	ProviderModel  string         `json:"provider_model,omitempty"`
-	Instructions   string         `json:"instructions,omitempty"`
-	Prompt         string         `json:"prompt,omitempty"`
-	Session        SessionPayload `json:"session"`
-	Files          []FileMeta     `json:"files,omitempty"`
-	TimeoutSeconds int64          `json:"timeout_seconds"`
-	MaxOutputBytes int64          `json:"max_output_bytes"`
-	Stream         bool           `json:"stream"`
-	DiagnosticLog  bool           `json:"diagnostic_log"`
+	RunID          string                    `json:"run_id"`
+	Model          string                    `json:"model"`
+	ProviderModel  string                    `json:"provider_model,omitempty"`
+	Instructions   string                    `json:"instructions,omitempty"`
+	Prompt         string                    `json:"prompt,omitempty"`
+	Tools          []executor.ToolDefinition `json:"tools,omitempty"`
+	ToolChoice     any                       `json:"tool_choice,omitempty"`
+	MCP            *executor.MCPConfig       `json:"mcp,omitempty"`
+	Session        SessionPayload            `json:"session"`
+	Files          []FileMeta                `json:"files,omitempty"`
+	TimeoutSeconds int64                     `json:"timeout_seconds"`
+	MaxOutputBytes int64                     `json:"max_output_bytes"`
+	Stream         bool                      `json:"stream"`
+	DiagnosticLog  bool                      `json:"diagnostic_log"`
 }
 
 // ErrorPayload serializes executor.ExecError across HTTP boundaries.
@@ -85,12 +90,15 @@ type ErrorPayload struct {
 
 // ResultPayload serializes executor.ExecuteResult in the terminal NDJSON frame.
 type ResultPayload struct {
-	Answer            string         `json:"answer"`
-	ProviderSessionID string         `json:"provider_session_id,omitempty"`
-	Status            string         `json:"status"`
-	Usage             executor.Usage `json:"usage"`
-	ExitCode          int            `json:"exit_code"`
-	Error             *ErrorPayload  `json:"error,omitempty"`
+	Answer            string                      `json:"answer"`
+	ProviderSessionID string                      `json:"provider_session_id,omitempty"`
+	Status            string                      `json:"status"`
+	FinishReason      string                      `json:"finish_reason,omitempty"`
+	ToolCalls         []executor.ToolCall         `json:"tool_calls,omitempty"`
+	GeneratedFiles    []executor.GeneratedFileRef `json:"generated_files,omitempty"`
+	Usage             executor.Usage              `json:"usage"`
+	ExitCode          int                         `json:"exit_code"`
+	Error             *ErrorPayload               `json:"error,omitempty"`
 }
 
 // StreamFrame is one NDJSON line returned by POST /worker/execute.

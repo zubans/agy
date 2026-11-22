@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -18,6 +19,7 @@ func BuildFileInstruction(req ExecuteRequest) string {
 
 	hasPromptMD := false
 	var extraFiles []string
+	var mediaNotes []string
 	for _, f := range req.Files {
 		switch f.RelativePath {
 		case "./input/prompt.md":
@@ -26,6 +28,9 @@ func BuildFileInstruction(req ExecuteRequest) string {
 			// Handled explicitly below so ordering is deterministic.
 		default:
 			extraFiles = append(extraFiles, f.RelativePath)
+			if f.MediaKind == "image" || f.MediaKind == "audio" {
+				mediaNotes = append(mediaNotes, fmt.Sprintf("- %s (file_id=%s, kind=%s, type=%s)", f.RelativePath, f.ID, f.MediaKind, f.ContentType))
+			}
 		}
 	}
 
@@ -46,6 +51,12 @@ func BuildFileInstruction(req ExecuteRequest) string {
 		b.WriteString(".\n")
 	}
 
+	if len(mediaNotes) > 0 {
+		b.WriteString("Attached media files (pass file_id to gateway MCP tools when processing audio/images):\n")
+		b.WriteString(strings.Join(mediaNotes, "\n"))
+		b.WriteString("\n")
+	}
+
 	if req.Prompt != "" {
 		b.WriteString("Additional request note: ")
 		b.WriteString(req.Prompt)
@@ -54,6 +65,38 @@ func BuildFileInstruction(req ExecuteRequest) string {
 
 	b.WriteString("Return the final answer.")
 	return b.String()
+}
+
+// WriteMCPConfigFile writes a scoped per-run MCP server configuration file inside workDir/.tmp/mcp.json.
+func WriteMCPConfigFile(workDir string, mcp *MCPConfig) (string, error) {
+	if mcp == nil || strings.TrimSpace(mcp.URL) == "" {
+		return "", nil
+	}
+	tmpDir := filepath.Join(workDir, ".tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		return "", fmt.Errorf("create mcp tmp dir: %w", err)
+	}
+	cfg := map[string]any{
+		"mcpServers": map[string]any{
+			"gateway": map[string]any{
+				"type":    "http",
+				"url":     mcp.URL,
+				"httpUrl": mcp.URL,
+				"headers": map[string]string{
+					"Authorization": "Bearer " + mcp.Token,
+				},
+			},
+		},
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(tmpDir, "mcp.json")
+	if err := os.WriteFile(p, raw, 0o600); err != nil {
+		return "", fmt.Errorf("write mcp config: %w", err)
+	}
+	return p, nil
 }
 
 // CheckBinary verifies that an executable resolves cleanly and is runnable.

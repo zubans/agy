@@ -354,12 +354,47 @@ func (c *ChatCompletionsSSE) Delta(text string) error {
 }
 
 func (c *ChatCompletionsSSE) Complete(usage executor.Usage) error {
+	return c.CompleteWithTools(nil, usage)
+}
+
+func (c *ChatCompletionsSSE) CompleteWithTools(toolCalls []executor.ToolCall, usage executor.Usage) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return nil
 	}
 	c.closed = true
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+		tcList := make([]map[string]any, 0, len(toolCalls))
+		for i, tc := range toolCalls {
+			tcList = append(tcList, map[string]any{
+				"index": i,
+				"id":    tc.ID,
+				"type":  "function",
+				"function": map[string]any{
+					"name":      tc.Name,
+					"arguments": tc.Arguments,
+				},
+			})
+		}
+		if err := writeSSEEvent(c.w, "", map[string]any{
+			"id":      c.id,
+			"object":  "chat.completion.chunk",
+			"created": c.created,
+			"model":   c.model,
+			"choices": []map[string]any{
+				{
+					"index":         0,
+					"delta":         map[string]any{"tool_calls": tcList},
+					"finish_reason": nil,
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
 	chunk := map[string]any{
 		"id":      c.id,
 		"object":  "chat.completion.chunk",
@@ -369,7 +404,7 @@ func (c *ChatCompletionsSSE) Complete(usage executor.Usage) error {
 			{
 				"index":         0,
 				"delta":         map[string]any{},
-				"finish_reason": "stop",
+				"finish_reason": finishReason,
 			},
 		},
 	}

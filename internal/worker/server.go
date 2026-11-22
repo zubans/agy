@@ -236,6 +236,9 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		Files:         stagedFiles,
 		Instructions:  meta.Instructions,
 		Prompt:        meta.Prompt,
+		Tools:         meta.Tools,
+		ToolChoice:    meta.ToolChoice,
+		MCP:           meta.MCP,
 		Session: executor.SessionContext{
 			GatewaySessionID:  meta.Session.GatewaySessionID,
 			ProviderSessionID: meta.Session.ProviderSessionID,
@@ -357,6 +360,8 @@ func unpackMultipartExecute(r *http.Request, workDir string, maxTotalBytes int64
 			Path:         destPath,
 			RelativePath: fm.RelativePath,
 			Size:         written,
+			MediaKind:    fm.MediaKind,
+			ContentType:  fm.ContentType,
 		}
 	}
 
@@ -399,6 +404,9 @@ func encodeDoneFrame(res executor.ExecuteResult, execErr error) StreamFrame {
 		Answer:            res.Answer,
 		ProviderSessionID: res.ProviderSessionID,
 		Status:            res.Status,
+		FinishReason:      res.FinishReason,
+		ToolCalls:         res.ToolCalls,
+		GeneratedFiles:    res.GeneratedFiles,
 		Usage:             res.Usage,
 		ExitCode:          res.ExitCode,
 	}

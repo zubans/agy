@@ -34,7 +34,10 @@ func (e *Executor) Capabilities() executor.Capabilities {
 		SessionResume:    true,
 		ModelSelection:   true,
 		FileInput:        true,
-		SupportedFormats: []string{"markdown", "text"},
+		ImageIn:          true,
+		Tools:            true,
+		MCP:              true,
+		SupportedFormats: []string{"markdown", "text", "image"},
 		TokenUsage:       true,
 	}
 }
@@ -121,7 +124,16 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 		sessionID = newUUID()
 	}
 
-	args := e.buildArgs(req, sysPromptFile, sessionID)
+	var mcpConfigFile string
+	if req.MCP != nil && strings.TrimSpace(req.MCP.URL) != "" {
+		var mcpErr error
+		mcpConfigFile, mcpErr = executor.WriteMCPConfigFile(req.WorkDir, req.MCP)
+		if mcpErr != nil {
+			return executor.ExecuteResult{Status: "failed", ExitCode: -1}, mcpErr
+		}
+	}
+
+	args := e.buildArgs(req, sysPromptFile, mcpConfigFile, sessionID)
 
 	instruction := executor.BuildFileInstruction(req)
 	stdinPayload, err := json.Marshal(map[string]any{
@@ -283,10 +295,13 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 	}, nil
 }
 
-func (e *Executor) buildArgs(req executor.ExecuteRequest, sysPromptFile, sessionID string) []string {
+func (e *Executor) buildArgs(req executor.ExecuteRequest, sysPromptFile, mcpConfigFile, sessionID string) []string {
 	tools := "Read"
 	if len(e.cfg.AllowedTools) > 0 {
 		tools = strings.Join(e.cfg.AllowedTools, ",")
+	}
+	if mcpConfigFile != "" {
+		tools += ",mcp__gateway__*"
 	}
 	args := []string{
 		"-p",
@@ -296,6 +311,9 @@ func (e *Executor) buildArgs(req executor.ExecuteRequest, sysPromptFile, session
 		"--include-partial-messages",
 		"--strict-mcp-config",
 		"--tools", tools,
+	}
+	if mcpConfigFile != "" {
+		args = append(args, "--mcp-config", mcpConfigFile)
 	}
 	if !e.cfg.AllowCommands {
 		args = append(args, "--restricted")

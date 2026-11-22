@@ -326,6 +326,7 @@
     <nav class="tabs" id="tabs">
       <button class="tab-btn active" data-tab="catalog">Опубликованные модели (Конструктор)</button>
       <button class="tab-btn" data-tab="providers">Провайдеры и выбор моделей</button>
+      <button class="tab-btn" data-tab="tools">Инструменты (Аудио / Изображения)</button>
       <button class="tab-btn" data-tab="runs">Запуски и процессы</button>
       <button class="tab-btn" data-tab="sessions">Сессии</button>
       <button class="tab-btn" data-tab="files">Файлы</button>
@@ -572,6 +573,59 @@
     </section>
 
     <!-- TAB: CONFIG -->
+    <!-- TAB: TOOLS & MEDIA BACKENDS -->
+    <section id="tab-tools" class="tab-pane hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2>Внешние медиа-бэкенды (Whisper STT, TTS, ImageGen)</h2>
+          <div class="row">
+            <button class="btn" id="btn-probe-tools">Проверить (Probe)</button>
+            <button class="btn" id="btn-reload-tools">Обновить</button>
+          </div>
+        </div>
+        <p class="hint">
+          Укажите URL OpenAI-совместимых сервисов (например, локальный Whisper/Kokoro/Flux на GPU-сервере). Оставьте API-ключ пустым, чтобы не менять сохранённый.
+        </p>
+        <div id="tools-backends-list" class="grid-2"></div>
+        <pre id="tools-probe-out" class="hidden" style="margin-top:12px;"></pre>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Серверные инструменты моделей (MCP + Ollama tool loop)</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Инструмент</th>
+              <th>Категория</th>
+              <th>Статус</th>
+              <th>Описание</th>
+            </tr>
+          </thead>
+          <tbody id="tools-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Привязка инструментов к опубликованной модели</h2>
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          <select id="tools-model-select" style="min-width:240px;"></select>
+          <button class="btn primary" id="btn-save-model-tools">Сохранить привязку</button>
+        </div>
+        <div class="row" style="margin-bottom:10px; gap:16px;">
+          <label><input type="checkbox" id="cap-image-in"> image_in</label>
+          <label><input type="checkbox" id="cap-audio-in"> audio_in</label>
+          <label><input type="checkbox" id="cap-image-out"> image_out</label>
+          <label><input type="checkbox" id="cap-audio-out"> audio_out</label>
+          <label><input type="checkbox" id="cap-tools"> tools</label>
+        </div>
+        <div id="tools-model-checkboxes" class="row" style="flex-wrap:wrap; gap:10px;"></div>
+      </div>
+    </section>
+
     <section id="tab-config" class="tab-pane hidden">
       <div class="grid-2">
         <div class="card">
@@ -795,6 +849,7 @@ Gemini CLI:
     switch (activeTab) {
       case "catalog": return loadCatalog();
       case "providers": return loadProviders();
+      case "tools": return loadTools();
       case "runs": return loadRuns();
       case "sessions": return loadSessions();
       case "files": return loadFiles();
@@ -1960,6 +2015,123 @@ Gemini CLI:
       loadStatus();
       loadCooldowns();
     }
+  };
+
+  // TOOLS & MEDIA BACKENDS
+  let cachedToolInfos = [];
+  async function loadTools() {
+    const res = await api("/tools");
+    cachedToolInfos = res.tools || [];
+    const tbody = $("tools-tbody");
+    clearEl(tbody);
+    for (const t of cachedToolInfos) {
+      const tr = mk("tr");
+      tr.appendChild(mk("td", { class: "mono" }, t.name));
+      tr.appendChild(mk("td", {}, t.category));
+      tr.appendChild(mk("td", {}, t.available ? "готов" : (t.requirement || "не настроен")));
+      tr.appendChild(mk("td", {}, t.description));
+      tbody.appendChild(tr);
+    }
+
+    const blist = $("tools-backends-list");
+    clearEl(blist);
+    for (const b of res.backends || []) {
+      const box = mk("div", { class: "card", style: "margin:0;" });
+      box.appendChild(mk("h3", { style: "margin:0 0 8px 0;" }, `${b.key} — ${b.name || b.key}`));
+      const urlIn = mk("input", { type: "text", value: b.base_url || "", placeholder: "http://gpu-host:8000", style: "width:100%;margin-bottom:6px;" });
+      const modelIn = mk("input", { type: "text", value: b.model || "", placeholder: "Модель (напр. whisper-1 / tts-1)", style: "width:100%;margin-bottom:6px;" });
+      const keyIn = mk("input", { type: "password", value: "", placeholder: b.has_api_key ? "API ключ сохранён (оставьте пустым)" : "API ключ (опционально)", style: "width:100%;margin-bottom:6px;" });
+      const enChk = mk("input", { type: "checkbox" });
+      enChk.checked = !!b.enabled;
+      const enLbl = mk("label", { style: "display:inline-flex;align-items:center;gap:6px;margin-right:12px;" }, enChk, "Включён");
+      const saveBtn = mk("button", {
+        class: "btn sm primary",
+        onclick: async () => {
+          try {
+            await api(`/tools/backends/${encodeURIComponent(b.key)}`, {
+              method: "PUT",
+              body: JSON.stringify({
+                name: b.name || b.key,
+                base_url: urlIn.value.trim(),
+                model: modelIn.value.trim(),
+                api_key: keyIn.value.trim(),
+                enabled: enChk.checked
+              })
+            });
+            showToast(`Бэкенд ${b.key} сохранён`);
+            loadTools();
+          } catch (err) { showToast(err.message, true); }
+        }
+      }, "Сохранить");
+      box.appendChild(urlIn);
+      box.appendChild(modelIn);
+      box.appendChild(keyIn);
+      box.appendChild(mk("div", { class: "row" }, enLbl, saveBtn));
+      blist.appendChild(box);
+    }
+
+    // Populate published models selector for tool bindings.
+    const cat = await api("/catalog").catch(() => ({ data: [] }));
+    const sel = $("tools-model-select");
+    const prev = sel.value;
+    clearEl(sel);
+    for (const pm of cat.data || []) {
+      sel.appendChild(mk("option", { value: pm.id }, pm.id));
+    }
+    if (prev) sel.value = prev;
+    if (sel.value) await loadModelToolBindings(sel.value);
+  }
+
+  async function loadModelToolBindings(modelId) {
+    if (!modelId) return;
+    const res = await api(`/catalog/${encodeURIComponent(modelId)}/tools`);
+    const bound = new Set(res.tools || []);
+    const caps = res.capabilities || {};
+    $("cap-image-in").checked = !!caps.image_in;
+    $("cap-audio-in").checked = !!caps.audio_in;
+    $("cap-image-out").checked = !!caps.image_out;
+    $("cap-audio-out").checked = !!caps.audio_out;
+    $("cap-tools").checked = !!caps.tools;
+
+    const wrap = $("tools-model-checkboxes");
+    clearEl(wrap);
+    for (const t of cachedToolInfos) {
+      const chk = mk("input", { type: "checkbox", value: t.name });
+      chk.checked = bound.has(t.name);
+      wrap.appendChild(mk("label", { style: "display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;" }, chk, t.name));
+    }
+  }
+
+  $("tools-model-select").onchange = () => loadModelToolBindings($("tools-model-select").value);
+  $("btn-reload-tools").onclick = loadTools;
+  $("btn-probe-tools").onclick = async () => {
+    try {
+      const res = await api("/tools/probe", { method: "POST" });
+      const pre = $("tools-probe-out");
+      pre.classList.remove("hidden");
+      pre.textContent = JSON.stringify(res.probes || [], null, 2);
+    } catch (err) { showToast(err.message, true); }
+  };
+  $("btn-save-model-tools").onclick = async () => {
+    const modelId = $("tools-model-select").value;
+    if (!modelId) return;
+    const selected = Array.from($("tools-model-checkboxes").querySelectorAll("input:checked")).map((el) => el.value);
+    try {
+      await api(`/catalog/${encodeURIComponent(modelId)}/tools`, {
+        method: "PUT",
+        body: JSON.stringify({
+          tools: selected,
+          capabilities: {
+            image_in: $("cap-image-in").checked,
+            audio_in: $("cap-audio-in").checked,
+            image_out: $("cap-image-out").checked,
+            audio_out: $("cap-audio-out").checked,
+            tools: $("cap-tools").checked
+          }
+        })
+      });
+      showToast(`Инструменты модели ${modelId} сохранены`);
+    } catch (err) { showToast(err.message, true); }
   };
 
   // CONFIG

@@ -33,7 +33,11 @@ func (e *Executor) Capabilities() executor.Capabilities {
 		SessionResume:    true,
 		ModelSelection:   true,
 		FileInput:        true,
-		SupportedFormats: []string{"markdown", "text"},
+		ImageIn:          true,
+		AudioIn:          true,
+		Tools:            true,
+		MCP:              true,
+		SupportedFormats: []string{"markdown", "text", "image", "audio"},
 		TokenUsage:       true,
 	}
 }
@@ -149,6 +153,25 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 			Cause:   err,
 		}
 		return executor.ExecuteResult{Status: "failed", ExitCode: -1, Error: execErr}, execErr
+	}
+
+	if req.MCP != nil && strings.TrimSpace(req.MCP.URL) != "" {
+		if _, mcpErr := executor.WriteMCPConfigFile(req.WorkDir, req.MCP); mcpErr != nil {
+			return executor.ExecuteResult{Status: "failed", ExitCode: -1}, mcpErr
+		}
+		// Gemini CLI discovers project MCP servers from .gemini/settings.json inside WorkDir.
+		gemDir := req.WorkDir + "/.gemini"
+		if mkErr := os.MkdirAll(gemDir, 0o700); mkErr == nil {
+			raw, _ := json.MarshalIndent(map[string]any{
+				"mcpServers": map[string]any{
+					"gateway": map[string]any{
+						"httpUrl": req.MCP.URL,
+						"headers": map[string]string{"Authorization": "Bearer " + req.MCP.Token},
+					},
+				},
+			}, "", "  ")
+			_ = os.WriteFile(gemDir+"/settings.json", raw, 0o600)
+		}
 	}
 
 	instruction := executor.BuildFileInstruction(req)
