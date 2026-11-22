@@ -23,6 +23,16 @@ services:
       GATEWAY_WORKER_TOKEN: "${GATEWAY_WORKER_TOKEN:-dev-worker-token-change-me}"
       GATEWAY_OLLAMA_BASE_URL: "${GATEWAY_OLLAMA_BASE_URL:-}"
       GATEWAY_OLLAMA_MODEL: "${GATEWAY_OLLAMA_MODEL:-}"
+      GATEWAY_MCP_BASE_URL: "${GATEWAY_MCP_BASE_URL:-http://gateway:7070}"
+      GATEWAY_WHISPER_URL: "${GATEWAY_WHISPER_URL:-}"
+      GATEWAY_WHISPER_API_KEY: "${GATEWAY_WHISPER_API_KEY:-}"
+      GATEWAY_WHISPER_MODEL: "${GATEWAY_WHISPER_MODEL:-}"
+      GATEWAY_TTS_URL: "${GATEWAY_TTS_URL:-}"
+      GATEWAY_TTS_API_KEY: "${GATEWAY_TTS_API_KEY:-}"
+      GATEWAY_TTS_MODEL: "${GATEWAY_TTS_MODEL:-}"
+      GATEWAY_IMAGE_GEN_URL: "${GATEWAY_IMAGE_GEN_URL:-}"
+      GATEWAY_IMAGE_GEN_API_KEY: "${GATEWAY_IMAGE_GEN_API_KEY:-}"
+      GATEWAY_IMAGE_GEN_MODEL: "${GATEWAY_IMAGE_GEN_MODEL:-}"
     volumes:
       - ./configs/config.docker.yaml:/etc/cli-ai-gateway/config.yaml:ro
       - gateway_data:/var/lib/cli-gateway

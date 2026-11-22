@@ -33,7 +33,10 @@ func (e *Executor) Capabilities() executor.Capabilities {
 		SessionResume:    true,
 		ModelSelection:   true,
 		FileInput:        true,
-		SupportedFormats: []string{"markdown", "text"},
+		ImageIn:          true,
+		Tools:            true,
+		MCP:              true,
+		SupportedFormats: []string{"markdown", "text", "image"},
 		TokenUsage:       true,
 	}
 }
@@ -130,6 +133,12 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 			Cause:   err,
 		}
 		return executor.ExecuteResult{Status: "failed", ExitCode: -1, Error: execErr}, execErr
+	}
+
+	if req.MCP != nil && strings.TrimSpace(req.MCP.URL) != "" {
+		if _, mcpErr := executor.WriteMCPConfigFile(req.WorkDir, req.MCP); mcpErr != nil {
+			return executor.ExecuteResult{Status: "failed", ExitCode: -1}, mcpErr
+		}
 	}
 
 	instruction := executor.BuildFileInstruction(req)

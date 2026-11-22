@@ -17,15 +17,51 @@ const (
 	EventError     EventType = "error"
 )
 
-// Capabilities honestly describes what an executor supports (Section 7.4).
+// Capabilities honestly describes what an executor supports (Section 7.4, ADR-004).
 // Adapters must not fake capabilities absent from the underlying CLI/engine.
 type Capabilities struct {
 	Streaming        bool     `json:"streaming"`
 	SessionResume    bool     `json:"session_resume"`
 	ModelSelection   bool     `json:"model_selection"`
 	FileInput        bool     `json:"file_input"`
+	ImageIn          bool     `json:"image_in"`
+	AudioIn          bool     `json:"audio_in"`
+	ImageOut         bool     `json:"image_out"`
+	AudioOut         bool     `json:"audio_out"`
+	Tools            bool     `json:"tools"`
+	MCP              bool     `json:"mcp"`
 	SupportedFormats []string `json:"supported_formats"`
 	TokenUsage       bool     `json:"token_usage"`
+}
+
+// ToolDefinition describes a JSON-Schema function tool (OpenAI / MCP compatible).
+type ToolDefinition struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// ToolCall represents a single model-initiated tool invocation.
+type ToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON object string
+}
+
+// GeneratedFileRef references a file artifact created by a server tool during a run.
+type GeneratedFileRef struct {
+	FileID      string `json:"file_id"`
+	Filename    string `json:"filename"`
+	MediaKind   string `json:"media_kind"`
+	ContentType string `json:"content_type"`
+	Bytes       int64  `json:"bytes"`
+	URL         string `json:"url"`
+}
+
+// MCPConfig carries scoped per-run MCP server connection info for CLI workers.
+type MCPConfig struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
 }
 
 // ExecuteFile describes an authorized file staged inside the run workspace.
@@ -35,6 +71,8 @@ type ExecuteFile struct {
 	Path         string
 	RelativePath string
 	Size         int64
+	MediaKind    string
+	ContentType  string
 }
 
 // SessionContext carries gateway and provider session continuity state.
@@ -62,6 +100,9 @@ type ExecuteRequest struct {
 	Files         []ExecuteFile
 	Instructions  string
 	Prompt        string
+	Tools         []ToolDefinition
+	ToolChoice    any
+	MCP           *MCPConfig
 	Session       SessionContext
 	Settings      ExecutionSettings
 }
@@ -135,6 +176,9 @@ type ExecuteResult struct {
 	Answer            string
 	ProviderSessionID string
 	Status            string
+	FinishReason      string
+	ToolCalls         []ToolCall
+	GeneratedFiles    []GeneratedFileRef
 	Usage             Usage
 	ExitCode          int
 	Error             *ExecError

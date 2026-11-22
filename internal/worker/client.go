@@ -202,6 +202,8 @@ func buildExecuteMeta(req executor.ExecuteRequest, cfg config.ModelConfig) Execu
 			Name:         f.Name,
 			RelativePath: f.RelativePath,
 			Size:         f.Size,
+			MediaKind:    f.MediaKind,
+			ContentType:  f.ContentType,
 			FieldName:    fmt.Sprintf("file_%d", i),
 		})
 	}
@@ -212,6 +214,9 @@ func buildExecuteMeta(req executor.ExecuteRequest, cfg config.ModelConfig) Execu
 		ProviderModel: providerModel,
 		Instructions:  req.Instructions,
 		Prompt:        req.Prompt,
+		Tools:         req.Tools,
+		ToolChoice:    req.ToolChoice,
+		MCP:           req.MCP,
 		Session: SessionPayload{
 			GatewaySessionID:  req.Session.GatewaySessionID,
 			ProviderSessionID: req.Session.ProviderSessionID,
@@ -347,6 +352,9 @@ func decodeDoneFrame(frame StreamFrame) (executor.ExecuteResult, error) {
 		Answer:            frame.Result.Answer,
 		ProviderSessionID: frame.Result.ProviderSessionID,
 		Status:            frame.Result.Status,
+		FinishReason:      frame.Result.FinishReason,
+		ToolCalls:         frame.Result.ToolCalls,
+		GeneratedFiles:    frame.Result.GeneratedFiles,
 		Usage:             frame.Result.Usage,
 		ExitCode:          frame.Result.ExitCode,
 	}

@@ -26,6 +26,7 @@ import (
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
+	"cli-ai-gateway/internal/tools"
 )
 
 //go:embed ui/index.html
@@ -63,6 +64,7 @@ type Dependencies struct {
 	Registry   *executor.Registry
 	Pools      *pools.Store
 	ProcMgr    *process.Manager
+	Tools      *tools.Registry
 	Playground PlaygroundRunner
 }
 
@@ -123,6 +125,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /admin/api/cooldowns", h.requireAdmin(h.handleListCooldowns))
 	mux.HandleFunc("POST /admin/api/cooldowns/release", h.requireAdmin(h.handleReleaseCooldown))
+
+	mux.HandleFunc("GET /admin/api/tools", h.requireAdmin(h.handleListTools))
+	mux.HandleFunc("POST /admin/api/tools/probe", h.requireAdmin(h.handleProbeTools))
+	mux.HandleFunc("PUT /admin/api/tools/backends/{key}", h.requireAdmin(h.handleUpsertToolBackend))
+	mux.HandleFunc("GET /admin/api/catalog/{model_id}/tools", h.requireAdmin(h.handleGetCatalogModelTools))
+	mux.HandleFunc("PUT /admin/api/catalog/{model_id}/tools", h.requireAdmin(h.handleSetCatalogModelTools))
 
 	mux.HandleFunc("GET /admin/api/keys", h.requireAdmin(h.handleListKeys))
 	mux.HandleFunc("POST /admin/api/keys", h.requireAdmin(h.handleCreateKey))

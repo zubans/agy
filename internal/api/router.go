@@ -9,10 +9,12 @@ import (
 	"cli-ai-gateway/internal/auth"
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
+	"cli-ai-gateway/internal/mcpserver"
 	"cli-ai-gateway/internal/pools"
 	"cli-ai-gateway/internal/process"
 	"cli-ai-gateway/internal/session"
 	"cli-ai-gateway/internal/storage"
+	"cli-ai-gateway/internal/tools"
 )
 
 // Dependencies bundles all services required to construct the HTTP router.
@@ -26,6 +28,7 @@ type Dependencies struct {
 	Sessions  *session.Manager
 	Registry  *executor.Registry
 	Pools     *pools.Store
+	Tools     *tools.Registry
 	ProcMgr   *process.Manager
 }
 
@@ -34,6 +37,14 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.Pools == nil && deps.DB != nil {
 		deps.Pools = pools.NewStore(deps.DB.SQL())
 	}
+	if deps.Tools == nil {
+		var bStore *tools.BackendStore
+		if deps.DB != nil {
+			bStore = tools.NewBackendStore(deps.DB.SQL())
+		}
+		deps.Tools = tools.NewRegistry(deps.Files, bStore)
+	}
+	mcpSrv := mcpserver.NewServer(deps.Tools)
 
 	mux := http.NewServeMux()
 
@@ -41,11 +52,18 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /health", health.Health)
 	mux.HandleFunc("GET /ready", health.Ready)
 
+	// Scoped per-run MCP server endpoint for CLI workers (protected by ephemeral per-run Bearer token).
+	mux.HandleFunc("POST /internal/mcp/{run_id}", mcpSrv.HandleHTTP)
+
 	models := NewModelsHandler(deps.Registry, deps.Pools)
 	files := NewFilesHandler(deps.Files, deps.Config.Storage.MaxFileBytes)
 	runner := NewRunner(deps.Config, deps.Registry, deps.Pools, deps.Files, deps.Sessions, deps.ProcMgr)
+	runner.SetTools(deps.Tools, mcpSrv)
+	deps.Tools.SetModelInvoker(runner.InvokePoolByCapability)
+
 	responses := NewResponsesHandler(runner)
 	chat := NewChatHandler(runner)
+	media := NewMediaHandler(deps.Files, deps.Tools)
 
 	v1Mux := http.NewServeMux()
 	v1Mux.HandleFunc("GET /v1/models", models.List)
@@ -56,6 +74,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	v1Mux.HandleFunc("DELETE /v1/files/{file_id}", files.Delete)
 	v1Mux.HandleFunc("POST /v1/responses", responses.Create)
 	v1Mux.HandleFunc("POST /v1/chat/completions", chat.Create)
+	v1Mux.HandleFunc("POST /v1/audio/transcriptions", media.AudioTranscriptions)
+	v1Mux.HandleFunc("POST /v1/audio/speech", media.AudioSpeech)
+	v1Mux.HandleFunc("POST /v1/images/generations", media.ImageGenerations)
 
 	mux.Handle("/v1/", RequireAuth(deps.Auth, v1Mux))
 
@@ -69,6 +90,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			Sessions:   deps.Sessions,
 			Registry:   deps.Registry,
 			Pools:      deps.Pools,
+			Tools:      deps.Tools,
 			ProcMgr:    deps.ProcMgr,
 			Playground: runner,
 		})
