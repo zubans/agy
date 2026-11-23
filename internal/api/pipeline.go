@@ -511,11 +511,6 @@ func (rn *Runner) executeAttempt(
 			res.Error = nil
 			execErr = nil
 		}
-		for _, gf := range mcpSess.GeneratedFiles() {
-			genMu.Lock()
-			generatedFiles = append(generatedFiles, gf)
-			genMu.Unlock()
-		}
 	}
 	genMu.Lock()
 	if len(generatedFiles) > 0 {

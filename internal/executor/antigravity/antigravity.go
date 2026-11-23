@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"cli-ai-gateway/internal/config"
 	"cli-ai-gateway/internal/executor"
 	"cli-ai-gateway/internal/process"
 )
+
+var agyMCPMu sync.Mutex
 
 // Executor adapts Google Antigravity CLI (`agy`) using stream-json input/output.
 type Executor struct {
@@ -284,6 +288,16 @@ func (e *Executor) Execute(ctx context.Context, req executor.ExecuteRequest, emi
 		extraEnv["AGY_MCP_CONFIG"] = mcpPath
 		extraEnv["AGY_MCP_URL"] = req.MCP.URL
 		extraEnv["AGY_MCP_TOKEN"] = req.MCP.Token
+
+		homeDir := strings.TrimSpace(e.cfg.HomeDir)
+		if homeDir == "" {
+			homeDir, _ = os.UserHomeDir()
+		}
+		if homeDir != "" {
+			if cleanup, regErr := registerAgyHomeMCP(homeDir, "gateway", req.MCP); regErr == nil {
+				defer cleanup()
+			}
+		}
 	}
 
 	instruction := executor.BuildFileInstruction(req)
@@ -449,7 +463,63 @@ func (e *Executor) buildArgs(req executor.ExecuteRequest) []string {
 	if req.Session.IsResume && req.Session.ProviderSessionID != "" {
 		args = append(args, "--conversation", req.Session.ProviderSessionID)
 	}
+	if req.MCP != nil && strings.TrimSpace(req.MCP.URL) != "" {
+		args = append(args, "--dangerously-skip-permissions")
+	}
 	return args
+}
+
+// registerAgyHomeMCP writes a scoped HTTP MCP server entry into <homeDir>/.gemini/config/mcp_config.json
+// using the exact format expected by `agy` CLI ("serverUrl" + "headers"), and returns a cleanup callback.
+func registerAgyHomeMCP(homeDir, serverName string, mcp *executor.MCPConfig) (func(), error) {
+	cfgDir := filepath.Join(homeDir, ".gemini", "config")
+	cfgPath := filepath.Join(cfgDir, "mcp_config.json")
+
+	agyMCPMu.Lock()
+	defer agyMCPMu.Unlock()
+
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		return nil, err
+	}
+	doc := map[string]any{}
+	if raw, err := os.ReadFile(cfgPath); err == nil && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &doc)
+	}
+	servers, ok := doc["mcpServers"].(map[string]any)
+	if !ok || servers == nil {
+		servers = map[string]any{}
+		doc["mcpServers"] = servers
+	}
+	servers[serverName] = map[string]any{
+		"disabled":  false,
+		"serverUrl": mcp.URL,
+		"headers": map[string]string{
+			"Authorization": "Bearer " + mcp.Token,
+		},
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(cfgPath, out, 0o600); err != nil {
+		return nil, err
+	}
+
+	cleanup := func() {
+		agyMCPMu.Lock()
+		defer agyMCPMu.Unlock()
+		cur := map[string]any{}
+		if raw, err := os.ReadFile(cfgPath); err == nil && len(raw) > 0 {
+			_ = json.Unmarshal(raw, &cur)
+		}
+		if srvMap, ok := cur["mcpServers"].(map[string]any); ok {
+			delete(srvMap, serverName)
+			if b, err := json.MarshalIndent(cur, "", "  "); err == nil {
+				_ = os.WriteFile(cfgPath, b, 0o600)
+			}
+		}
+	}
+	return cleanup, nil
 }
 
 type agyEvent struct {
